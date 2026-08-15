@@ -7,10 +7,12 @@
 #define NOMINMAX
 #define UNICODE
 #include <windows.h>
+#include <comdef.h>
 
 // Windows Sockets 2.
 
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <iphlpapi.h>
 
 // Windows Media Foundation.
@@ -47,3 +49,4 @@
 #include <vector>
 #include <span>
 #include <cassert>
+#include <chrono>
