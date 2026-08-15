@@ -43,3 +43,7 @@
 #pragma warning(pop)
 
 #include <print>
+#include <fstream>
+#include <vector>
+#include <span>
+#include <cassert>
