@@ -2,16 +2,24 @@
 
 using Microsoft::WRL::ComPtr;
 
-static constexpr std::string_view config_path = ".\\config.txt";
-static constexpr int expected_config_line_count = 2;
-static constexpr int packet_size = 1'384;
-
 struct Config {
     std::wstring port;
     std::wstring address;
 };
 
-Config read_config() {
+struct Packet_Header {
+    int32_t frame_index;
+    int32_t packet_index;
+    int32_t packet_count;
+    int32_t format_index;
+};
+
+static constexpr std::string_view config_path = ".\\config.txt";
+static constexpr int expected_config_line_count = 2;
+static constexpr int packet_size = 1'384;
+static constexpr int header_size = sizeof(Packet_Header);
+
+static Config read_config() {
     std::ifstream input_stream(config_path.data(), std::ios::in | std::ios::binary | std::ios::ate);
 
     if (!input_stream) {
@@ -42,12 +50,23 @@ Config read_config() {
     return config;
 }
 
-struct Packet_Header {
-    int32_t frame_index;
-    int32_t packet_index;
-    int32_t packet_count;
-    int32_t format_index;
-};
+static bool is_parameter_sets(std::span<uint8_t> &buffer) {
+    Bitstream_Reader reader(buffer);
+    assert(reader.can_read_bytes(6));
+
+    uint32_t four_byte_sequence = (uint32_t)reader.read_bytes(4);
+    if (four_byte_sequence != 0x00'00'00'01) {
+        return false;
+    }
+
+    uint8_t forbidden_zero_bit = (uint8_t)reader.read_bits(1);
+    assert(forbidden_zero_bit == 0);
+
+    uint8_t nal_unit_type = (uint8_t)reader.read_bits(6);
+
+    bool is_header_type = (nal_unit_type == 32) || (nal_unit_type == 33) || (nal_unit_type == 34);
+    return is_header_type;
+}
 
 int main() {
     std::println("Initialising COM");
@@ -111,18 +130,18 @@ int main() {
         THROW_WSA(WSAConnect);
     }
 
-    std::vector<char> send_buffer(packet_size);
+    std::vector<uint8_t> send_buffer(packet_size);
     WSABUF wsa_send_buffer = {};
-    wsa_send_buffer.buf = send_buffer.data();
+    wsa_send_buffer.buf = (CHAR *)send_buffer.data();
     wsa_send_buffer.len = packet_size;
     DWORD bytes_sent = 0;
     if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
         THROW_WSA(WSASend);
     }
 
-    std::vector<char> receive_buffer(packet_size);
+    std::vector<uint8_t> receive_buffer(packet_size);
     WSABUF wsa_receive_buffer = {};
-    wsa_receive_buffer.buf = receive_buffer.data();
+    wsa_receive_buffer.buf = (CHAR *)receive_buffer.data();
     wsa_receive_buffer.len = packet_size;
     DWORD bytes_received = 0;
     sockaddr server_address = {};
@@ -235,6 +254,13 @@ int main() {
         Packet_Header &packet_header = *(Packet_Header *)receive_buffer.data();
         assert(packet_header.format_index >= 0);
 
+        std::span<uint8_t> packet_data = { receive_buffer.begin() + header_size, receive_buffer.begin() + bytes_received };
+        bool has_parameter_sets = is_parameter_sets(packet_data);
+
         std::println("Received {} bytes: {{ frame_index: {}, packet_index: {}, packet_count: {}, format_index: {} }}", bytes_received, packet_header.frame_index, packet_header.packet_index, packet_header.packet_count, packet_header.format_index);
+
+        if (has_parameter_sets) {
+            std::println("\tHas parameter sets");
+        }
     }
 }
