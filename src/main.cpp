@@ -105,20 +105,34 @@ static int64_t get_sample_time(int64_t start_timestamp, int64_t end_timestamp) {
 struct App {
     SOCKET socket = INVALID_SOCKET;
 
+    ComPtr<IMFTransform> decoder;
     int video_width = -1;
     int video_height = -1;
     int video_framerate = -1;
+    int64_t start_timestamp = INT64_MIN;
+    int64_t sample_duration = INT64_MIN;
+    ComPtr<IMFSample> parameter_sets_sample;
+    std::vector<ComPtr<IMFSample>> video_samples;
+    MFT_OUTPUT_DATA_BUFFER output_sample_buffer = {};
 
+    bool ready_packet_sent = false;
     std::vector<uint8_t> receive_buffer = std::vector<uint8_t>(packet_size);
     WSABUF wsa_receive_buffer = {};
     DWORD bytes_received = 0;
+    std::vector<uint8_t> send_buffer = std::vector<uint8_t>(packet_size);
+    WSABUF wsa_send_buffer = {};
+    DWORD bytes_sent = 0;
 
     App() {
         wsa_receive_buffer.buf = (CHAR *)receive_buffer.data();
         wsa_receive_buffer.len = (ULONG)receive_buffer.size();
+        wsa_send_buffer.buf = (CHAR *)send_buffer.data();
+        wsa_send_buffer.len = (ULONG)send_buffer.size();
     }
 
     void connect(Config &config) {
+        std::println("Resolving server address");
+
         ADDRINFOW hints = {};
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_DGRAM;
@@ -137,14 +151,13 @@ struct App {
             THROW_WSA(WSAConnect);
         }
 
-        std::vector<uint8_t> send_buffer(packet_size);
-        WSABUF wsa_send_buffer = {};
-        wsa_send_buffer.buf = (CHAR *)send_buffer.data();
-        wsa_send_buffer.len = packet_size;
-        DWORD bytes_sent = 0;
+        std::println("Greeting server");
+
         if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
             THROW_WSA(WSASend);
         }
+
+        std::println("Waiting for server response");
 
         sockaddr server_address = {};
         INT server_address_length = sizeof(server_address);
@@ -156,6 +169,8 @@ struct App {
         if (bytes_received < 4) {
             throw std::runtime_error("Expected 4 bytes for the server receive port");
         }
+
+        std::println("Setting up initial state");
 
         std::span<int32_t> initial_values = { (int32_t *)(receive_buffer.data()), (int32_t *)(receive_buffer.data() + sizeof(int32_t) * 4) };
 
@@ -174,24 +189,30 @@ struct App {
         if (WSAConnect(socket, &server_address, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
             THROW_WSA(WSAConnect);
         }
-
-        std::println("Connected to server", bytes_received, server_port);
-
-        if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
-            THROW_WSA(WSASend);
-        }
-
-        std::println("Sent first packet to server", bytes_received, server_port);
     }
 
     [[nodiscard]] std::vector<uint8_t> receive() {
+        if (!ready_packet_sent) {
+            std::println("Sending 'ready' packet to server");
+
+            if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
+                THROW_WSA(WSASend);
+            }
+
+            ready_packet_sent = true;
+        }
+
         std::vector<uint8_t> result(packet_size);
 
         {
+            std::println("Waiting to receive from server");
+
             DWORD flags = 0;
             if (WSARecv(socket, &wsa_receive_buffer, 1, &bytes_received, &flags, NULL, NULL) != 0) {
                 THROW_WSA(WSARecv);
             }
+
+            std::println("Received {} bytes from server", bytes_received);
         }
 
         std::memcpy(result.data(), receive_buffer.data(), bytes_received);
@@ -199,131 +220,104 @@ struct App {
 
         return result;
     }
-};
 
-int main() {
-    std::println("Initialising COM");
+    void init_decoder() {
+        std::println("Creating decoder");
 
-    hresult(CoInitialize(NULL));
+        {
+            MFT_REGISTER_TYPE_INFO input = {};
+            input.guidMajorType = MFMediaType_Video;
+            input.guidSubtype = MFVideoFormat_HEVC;
+            MFT_REGISTER_TYPE_INFO output = {};
+            output.guidMajorType = MFMediaType_Video;
+            output.guidSubtype = MFVideoFormat_NV12;
+            IMFActivate **activates = nullptr;
+            UINT32 activate_count = 0;
+            hresult(MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER, &input, &output, &activates, &activate_count));
 
-    std::println("Initialising WSA");
+            if (activate_count == 0) {
+                throw std::runtime_error("Could not find any video decoders");
+            }
 
-    {
-        WSADATA wsa_data = {};
-        if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
-            THROW_WSA(WSAStartup);
+            hresult(activates[0]->ActivateObject(IID_PPV_ARGS(&decoder)));
+
+            // Clean up.
+
+            for (UINT32 i = 0; i < activate_count; i++) {
+                activates[i]->Release();
+            }
+
+            CoTaskMemFree(activates);
         }
+
+        std::println("Setting decoder input type");
+
+        for (DWORD i = 0;; i++) {
+            ComPtr<IMFMediaType> input;
+            hresult(decoder->GetInputAvailableType(0, i, &input));
+
+            GUID major_type = {};
+            hresult(input->GetMajorType(&major_type));
+            GUID subtype = {};
+            hresult(input->GetGUID(MF_MT_SUBTYPE, &subtype));
+            if ((major_type == MFMediaType_Video) && (subtype == MFVideoFormat_HEVC)) {
+                hresult(MFSetAttributeSize(input.Get(), MF_MT_FRAME_SIZE, video_width, video_height));
+                hresult(decoder->SetInputType(0, input.Get(), 0));
+                std::println("Input type set");
+                break;
+            }
+        }
+
+        std::println("Setting decoder output type");
+
+        for (DWORD i = 0;; i++) {
+            ComPtr<IMFMediaType> output;
+            hresult(decoder->GetOutputAvailableType(0, i, &output));
+
+            GUID major_type = {};
+            hresult(output->GetMajorType(&major_type));
+            GUID subtype = {};
+            output->GetGUID(MF_MT_SUBTYPE, &subtype);
+            if ((major_type == MFMediaType_Video) && (subtype == MFVideoFormat_NV12)) {
+                hresult(decoder->SetOutputType(0, output.Get(), 0));
+                break;
+            }
+        }
+
+        std::println("Initialising decoder resources");
+
+        MFT_INPUT_STREAM_INFO input_stream_info = {};
+        MFT_OUTPUT_STREAM_INFO output_stream_info = {};
+        hresult(decoder->GetInputStreamInfo(0, &input_stream_info));
+        hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
+
+        // TODO: DO NOT FORGET THAT MFT_INPUT_STREAM_WHOLE_SAMPLES IS SET IN THIS CONFIGURATION SO IF DECODING DOESN'T WORK BREAK THE PARAMETER SETS INTO 3 PACKETS AND PASS THEM IN SEPARATELY.
+
+        hresult(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
+
+        // Create output sample.
+
+        ComPtr<IMFMediaBuffer> output_buffer;
+        hresult(MFCreateMemoryBuffer(output_stream_info.cbSize, &output_buffer));
+
+        ComPtr<IMFSample> output_sample;
+        hresult(MFCreateSample(&output_sample));
+        hresult(output_sample->AddBuffer(output_buffer.Get()));
+
+        output_sample_buffer.dwStreamID = 0;
+        output_sample_buffer.pSample = output_sample.Get();
+
+        sample_duration = 10'000'000 /* Hundred-nanoseconds in a second. */ / video_framerate;
     }
 
-    Config config = read_config();
-
-    // Initialising app networking.
-
-    std::println("Creating decoder");
-
-    ComPtr<IMFTransform> decoder;
-
-    {
-        MFT_REGISTER_TYPE_INFO input = {};
-        input.guidMajorType = MFMediaType_Video;
-        input.guidSubtype = MFVideoFormat_HEVC;
-        MFT_REGISTER_TYPE_INFO output = {};
-        output.guidMajorType = MFMediaType_Video;
-        output.guidSubtype = MFVideoFormat_NV12;
-        IMFActivate **activates = nullptr;
-        UINT32 activate_count = 0;
-        hresult(MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER, &input, &output, &activates, &activate_count));
-
-        if (activate_count == 0) {
-            throw std::runtime_error("Could not find any video decoders");
-        }
-
-        hresult(activates[0]->ActivateObject(IID_PPV_ARGS(&decoder)));
-
-        // Clean up.
-
-        for (UINT32 i = 0; i < activate_count; i++) {
-            activates[i]->Release();
-        }
-
-        CoTaskMemFree(activates);
-    }
-
-    App app;
-    app.connect(config);
-
-    // Set input and output types.
-
-    std::println("Setting decoder input type");
-
-    for (DWORD i = 0;; i++) {
-        ComPtr<IMFMediaType> input;
-        hresult(decoder->GetInputAvailableType(0, i, &input));
-
-        GUID major_type = {};
-        hresult(input->GetMajorType(&major_type));
-        GUID subtype = {};
-        hresult(input->GetGUID(MF_MT_SUBTYPE, &subtype));
-        if ((major_type == MFMediaType_Video) && (subtype == MFVideoFormat_HEVC)) {
-            hresult(MFSetAttributeSize(input.Get(), MF_MT_FRAME_SIZE, app.video_width, app.video_height));
-            hresult(decoder->SetInputType(0, input.Get(), 0));
-            std::println("Input type set");
-            break;
-        }
-    }
-
-    std::println("Setting decoder output type");
-
-    for (DWORD i = 0;; i++) {
-        ComPtr<IMFMediaType> output;
-        hresult(decoder->GetOutputAvailableType(0, i, &output));
-
-        GUID major_type = {};
-        hresult(output->GetMajorType(&major_type));
-        GUID subtype = {};
-        output->GetGUID(MF_MT_SUBTYPE, &subtype);
-        if ((major_type == MFMediaType_Video) && (subtype == MFVideoFormat_NV12)) {
-            hresult(decoder->SetOutputType(0, output.Get(), 0));
-            break;
-        }
-    }
-
-    MFT_INPUT_STREAM_INFO input_stream_info = {};
-    MFT_OUTPUT_STREAM_INFO output_stream_info = {};
-    hresult(decoder->GetInputStreamInfo(0, &input_stream_info));
-    hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
-
-    // TODO: DO NOT FORGET THAT MFT_INPUT_STREAM_WHOLE_SAMPLES IS SET IN THIS CONFIGURATION SO IF DECODING DOESN'T WORK BREAK THE PARAMETER SETS INTO 3 PACKETS AND PASS THEM IN SEPARATELY.
-
-    hresult(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
-
-    // Create output sample.
-
-    ComPtr<IMFMediaBuffer> output_buffer;
-    hresult(MFCreateMemoryBuffer(output_stream_info.cbSize, &output_buffer));
-
-    ComPtr<IMFSample> output_sample;
-    hresult(MFCreateSample(&output_sample));
-    hresult(output_sample->AddBuffer(output_buffer.Get()));
-
-    MFT_OUTPUT_DATA_BUFFER output_sample_buffer = {};
-    output_sample_buffer.dwStreamID = 0;
-    output_sample_buffer.pSample = output_sample.Get();
-
-    ComPtr<IMFSample> parameter_sets_sample;
-    int64_t start_timestamp = INT64_MIN;
-    int64_t sample_duration = 10'000'000 /* Hundred-nanoseconds in a second. */ / app.video_framerate;
-    std::vector<ComPtr<IMFSample>> video_samples;
-    while (true) {
-        std::vector<uint8_t> packet = app.receive();
-
+    void process_packet(std::vector<uint8_t> &packet) {
         Packet_Header &header = *(Packet_Header *)packet.data();
         assert(header.format_index >= 0);
 
         std::span<uint8_t> payload = { packet.begin() + header_size, packet.end() };
         bool has_parameter_sets = is_parameter_sets(payload);
 
-        std::println("Received {} bytes: {{ frame_index: {}, packet_index: {}, packet_count: {}, format_index: {}: timestamp: {} }}", app.bytes_received, header.frame_index, header.packet_index, header.packet_count, header.format_index, header.timestamp);
+        std::println("{{ frame_index: {}, packet_index: {}, packet_count: {}, format_index: {}: timestamp: {} }}", packet.size(), header.frame_index, header.packet_index, header.packet_count, header.format_index, header.timestamp);
 
         if (has_parameter_sets) {
             assert(parameter_sets_sample == nullptr);
@@ -405,5 +399,30 @@ int main() {
         } else {
             std::println("Waiting for parameter sets");
         }
+    }
+};
+
+int main() {
+    std::println("Initialising COM");
+
+    hresult(CoInitialize(NULL));
+
+    std::println("Initialising WSA");
+
+    {
+        WSADATA wsa_data = {};
+        if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
+            THROW_WSA(WSAStartup);
+        }
+    }
+
+    Config config = read_config();
+
+    App app;
+    app.connect(config);
+    app.init_decoder();
+    while (true) {
+        std::vector<uint8_t> packet = app.receive();
+        app.process_packet(packet);
     }
 }
