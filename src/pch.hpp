@@ -8,6 +8,7 @@
 #define UNICODE
 #include <windows.h>
 #include <comdef.h>
+#include <wrl/client.h>
 
 // Windows Sockets 2.
 

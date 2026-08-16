@@ -1,5 +1,7 @@
 #include "lib/lib.hpp"
 
+using Microsoft::WRL::ComPtr;
+
 static constexpr std::string_view config_path = ".\\config.txt";
 static constexpr int expected_config_line_count = 2;
 static constexpr int packet_size = 1'384;
@@ -48,6 +50,42 @@ struct Packet_Header {
 };
 
 int main() {
+    std::println("Initialising COM");
+
+    check_hresult(CoInitialize(NULL));
+
+    std::println("Creating decoder");
+
+    ComPtr<IMFTransform> decoder;
+
+    {
+        MFT_REGISTER_TYPE_INFO input = {};
+        input.guidMajorType = MFMediaType_Video;
+        input.guidSubtype = MFVideoFormat_HEVC;
+        MFT_REGISTER_TYPE_INFO output = {};
+        output.guidMajorType = MFMediaType_Video;
+        output.guidSubtype = MFVideoFormat_NV12;
+        IMFActivate **activates = nullptr;
+        UINT32 activate_count = 0;
+        check_hresult(MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER, &input, &output, &activates, &activate_count));
+
+        if (activate_count == 0) {
+            throw std::runtime_error("Could not find any video decoders");
+        }
+
+        check_hresult(activates[0]->ActivateObject(IID_PPV_ARGS(&decoder)));
+
+        // Clean up.
+
+        for (UINT32 i = 0; i < activate_count; i++) {
+            activates[i]->Release();
+        }
+
+        CoTaskMemFree(activates);
+    }
+
+    std::println("Starting WSA");
+
     WSADATA wsa_data = {};
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
         THROW_WSA(WSAStartup);
