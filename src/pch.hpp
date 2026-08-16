@@ -53,3 +53,5 @@
 #include <span>
 #include <cassert>
 #include <chrono>
+#include <algorithm>
+#include <ranges>

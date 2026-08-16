@@ -15,6 +15,21 @@ struct Packet_Header {
     int64_t timestamp;
 };
 
+struct Frame {
+    int32_t frame_index;
+    int32_t packet_count;
+    int32_t format_index;
+    int64_t timestamp;
+    int32_t next_packet_index = 0;
+    std::vector<uint8_t> buffer;
+};
+
+struct Packet {
+    Packet_Header header;
+    std::vector<uint8_t> buffer;
+    std::span<uint8_t> payload;
+};
+
 static constexpr std::string_view config_path = ".\\config.txt";
 static constexpr int expected_config_line_count = 2;
 static constexpr int packet_size = 1'384;
@@ -53,7 +68,7 @@ static Config read_config() {
     return config;
 }
 
-static bool is_parameter_sets(std::span<uint8_t> &buffer) {
+static bool is_parameter_sets(std::span<uint8_t> buffer) {
     Bitstream_Reader reader(buffer);
     assert(reader.can_read_bytes(6));
 
@@ -106,22 +121,28 @@ struct App {
     SOCKET socket = INVALID_SOCKET;
 
     ComPtr<IMFTransform> decoder;
-    int video_width = -1;
-    int video_height = -1;
-    int video_framerate = -1;
-    int64_t start_timestamp = INT64_MIN;
-    int64_t sample_duration = INT64_MIN;
     ComPtr<IMFSample> parameter_sets_sample;
     std::vector<ComPtr<IMFSample>> video_samples;
     MFT_OUTPUT_DATA_BUFFER output_sample_buffer = {};
 
-    bool ready_packet_sent = false;
     std::vector<uint8_t> receive_buffer = std::vector<uint8_t>(packet_size);
     WSABUF wsa_receive_buffer = {};
     DWORD bytes_received = 0;
     std::vector<uint8_t> send_buffer = std::vector<uint8_t>(packet_size);
     WSABUF wsa_send_buffer = {};
     DWORD bytes_sent = 0;
+
+    int video_width = -1;
+    int video_height = -1;
+    int video_framerate = -1;
+    int64_t start_timestamp = INT64_MIN;
+    int64_t sample_duration = INT64_MIN;
+
+    bool ready_packet_sent = false;
+
+    std::vector<Frame> frames;
+    std::vector<Frame> completed_frames;
+    std::vector<Packet> packets;
 
     App() {
         wsa_receive_buffer.buf = (CHAR *)receive_buffer.data();
@@ -310,26 +331,21 @@ struct App {
         sample_duration = 10'000'000 /* Hundred-nanoseconds in a second. */ / video_framerate;
     }
 
-    void process_packet(std::vector<uint8_t> &packet) {
-        Packet_Header &header = *(Packet_Header *)packet.data();
-        assert(header.format_index >= 0);
+    void process_frame(Frame &frame) {
+        std::println("Processing completed frame {} ({} byte(s)); {} packet(s) remain", frame.frame_index, frame.buffer.size(), packets.size());
 
-        std::span<uint8_t> payload = { packet.begin() + header_size, packet.end() };
-        bool has_parameter_sets = is_parameter_sets(payload);
-
-        std::println("{{ frame_index: {}, packet_index: {}, packet_count: {}, format_index: {}: timestamp: {} }}", packet.size(), header.frame_index, header.packet_index, header.packet_count, header.format_index, header.timestamp);
-
+        bool has_parameter_sets = is_parameter_sets(frame.buffer);
         if (has_parameter_sets) {
             assert(parameter_sets_sample == nullptr);
 
             if (start_timestamp == INT64_MIN) {
-                start_timestamp = header.timestamp;
+                start_timestamp = frame.timestamp;
             }
 
-            int64_t sample_time = get_sample_time(start_timestamp, header.timestamp);
+            int64_t sample_time = get_sample_time(start_timestamp, frame.timestamp);
             std::println("Adding parameter sets with timestamp {}", sample_time);
-            parameter_sets_sample = create_sample(payload.size(), sample_time, 0);
-            copy_payload_to_first_buffer(parameter_sets_sample, payload);
+            parameter_sets_sample = create_sample(frame.buffer.size(), sample_time, 0);
+            copy_payload_to_first_buffer(parameter_sets_sample, frame.buffer);
 
             hresult(decoder->ProcessInput(0, parameter_sets_sample.Get(), 0));
 
@@ -352,10 +368,10 @@ struct App {
                 output_sample_buffer.dwStatus = 0;
             }
         } else {
-            int64_t sample_time = get_sample_time(start_timestamp, header.timestamp);
+            int64_t sample_time = get_sample_time(start_timestamp, frame.timestamp);
             std::println("Adding video sample with timestamp {}", sample_time);
-            ComPtr<IMFSample> sample = create_sample(payload.size(), sample_time, sample_duration);
-            copy_payload_to_first_buffer(sample, payload);
+            ComPtr<IMFSample> sample = create_sample(frame.buffer.size(), sample_time, sample_duration);
+            copy_payload_to_first_buffer(sample, frame.buffer);
 
             video_samples.push_back(sample);
         }
@@ -400,6 +416,104 @@ struct App {
             std::println("Waiting for parameter sets");
         }
     }
+
+    void fill_completed_frame_buffer(Frame &frame) {
+        std::ranges::sort(packets, [](Packet &first, Packet &second) {
+            if (first.header.frame_index < second.header.frame_index) {
+                return true;
+            } else if (second.header.frame_index < first.header.frame_index) {
+                return false;
+            } else if (first.header.packet_index < second.header.packet_index) {
+                return true;
+            } else if (second.header.packet_index < first.header.packet_index) {
+                return false;
+            } else {
+                abort(); // Not expecting duplicate frames.
+            }
+        });
+
+        std::vector<Packet>::iterator start_it = std::ranges::find_if(packets, [&frame](Packet &packet) { return packet.header.frame_index == frame.frame_index; });
+        std::vector<Packet>::iterator end_it = start_it + frame.packet_count;
+
+        size_t frame_size = 0;
+        for (auto it = start_it; it < end_it; ++it) {
+            Packet &packet = *it;
+            frame_size += packet.payload.size();
+        }
+
+        frame.buffer.resize(frame_size);
+
+        // Copy contents.
+
+        auto copy_dest = frame.buffer.begin();
+        size_t expected_packet_index = 0;
+        for (auto it = start_it; it < end_it; ++it) {
+            Packet &packet = *it;
+
+            assert(packet.header.packet_index == expected_packet_index);
+
+            std::ranges::copy(packet.payload, copy_dest);
+            copy_dest += packet.payload.size();
+
+            expected_packet_index++;
+        }
+
+        assert(copy_dest == frame.buffer.end());
+
+        // Remove packets.
+
+        auto remove_range = std::ranges::remove_if(packets, [&frame](Packet &packet) { return packet.header.frame_index == frame.frame_index; });
+        packets.erase(remove_range.begin(), remove_range.end());
+    }
+
+    void receive_packets() {
+        while (true) {
+            // Get the packet.
+
+            {
+                Packet packet;
+                packet.buffer = receive();
+                assert(packet.buffer.size() >= header_size);
+                packet.payload = { packet.buffer.begin() + header_size, packet.buffer.end() };
+                packet.header = *(Packet_Header *)packet.buffer.data();
+                packets.push_back(std::move(packet));
+            }
+
+            // Check if the packet completes a frame.
+
+            {
+                Packet &packet = packets.back();
+                std::vector<Frame>::iterator frame_it = std::ranges::find_if(frames, [&packet](int32_t frame_index) { return packet.header.frame_index == frame_index; }, [this](Frame &frame) { return frame.frame_index; });
+
+                // Add frame if it doesn't exist.
+
+                if (frame_it == frames.end()) {
+                    Frame new_frame;
+                    new_frame.frame_index = packet.header.frame_index;
+                    new_frame.packet_count = packet.header.packet_count;
+                    new_frame.format_index = packet.header.format_index;
+                    new_frame.timestamp = packet.header.timestamp;
+                    frames.push_back(new_frame);
+                    frame_it = std::prev(frames.end());
+                }
+
+                Frame &frame = *frame_it;
+
+                if (packet.header.packet_index == frame.next_packet_index) {
+                    frame.next_packet_index++;
+                }
+
+                if (frame.next_packet_index == frame.packet_count) {
+                    std::swap(frame, frames.back());
+                    Frame completed_frame = std::move(frame);
+                    frames.pop_back();
+
+                    fill_completed_frame_buffer(completed_frame);
+                    process_frame(completed_frame);
+                }
+            }
+        }
+    }
 };
 
 int main() {
@@ -421,8 +535,5 @@ int main() {
     App app;
     app.connect(config);
     app.init_decoder();
-    while (true) {
-        std::vector<uint8_t> packet = app.receive();
-        app.process_packet(packet);
-    }
+    app.receive_packets();
 }
