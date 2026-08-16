@@ -40,6 +40,13 @@ Config read_config() {
     return config;
 }
 
+struct Packet_Header {
+    int32_t frame_index;
+    int32_t packet_index;
+    int32_t packet_count;
+    int32_t format_index;
+};
+
 int main() {
     WSADATA wsa_data = {};
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
@@ -101,6 +108,9 @@ int main() {
     int video_width = initial_values[1];
     int video_height = initial_values[2];
     int video_framerate = initial_values[3];
+    std::ignore = video_width;
+    std::ignore = video_height;
+    std::ignore = video_framerate;
 
     ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
     std::println("Received {} bytes; server port is {}", bytes_received, server_port);
@@ -123,6 +133,9 @@ int main() {
             THROW_WSA(WSARecv);
         }
 
-        std::println("Received {} bytes", bytes_received);
+        Packet_Header &packet_header = *(Packet_Header *)receive_buffer.data();
+        assert(packet_header.format_index >= 0);
+
+        std::println("Received {} bytes: {{ frame_index: {}, packet_index: {}, packet_count: {}, format_index: {} }}", bytes_received, packet_header.frame_index, packet_header.packet_index, packet_header.packet_count, packet_header.format_index);
     }
 }
