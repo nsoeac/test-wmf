@@ -184,6 +184,33 @@ int main() {
         }
     }
 
+    MFT_INPUT_STREAM_INFO input_stream_info = {};
+    MFT_OUTPUT_STREAM_INFO output_stream_info = {};
+    hresult(decoder->GetInputStreamInfo(0, &input_stream_info));
+    hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
+
+    // TODO: DO NOT FORGET THAT MFT_INPUT_STREAM_WHOLE_SAMPLES IS SET IN THIS CONFIGURATION SO IF DECODING DOESN'T WORK BREAK THE PARAMETER SETS INTO 3 PACKETS AND PASS THEM IN SEPARATELY.
+
+    hresult(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
+
+    // Create output sample.
+
+    ComPtr<IMFMediaBuffer> output_buffer;
+    hresult(MFCreateMemoryBuffer(output_stream_info.cbSize, &output_buffer));
+
+    ComPtr<IMFSample> output_sample;
+    hresult(MFCreateSample(&output_sample));
+    hresult(output_sample->AddBuffer(output_buffer.Get()));
+
+    // Create input sample.
+
+    ComPtr<IMFMediaBuffer> input_buffer;
+    hresult(MFCreateMemoryBuffer(input_stream_info.cbSize, &input_buffer));
+
+    ComPtr<IMFSample> input_sample;
+    hresult(MFCreateSample(&input_sample));
+    hresult(input_sample->AddBuffer(input_buffer.Get()));
+
     ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
     std::println("Received {} bytes; server port is {}", bytes_received, server_port);
 
