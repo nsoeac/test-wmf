@@ -68,6 +68,28 @@ static bool is_parameter_sets(std::span<uint8_t> &buffer) {
     return is_header_type;
 }
 
+static ComPtr<IMFSample> create_sample(size_t size) {
+    ComPtr<IMFMediaBuffer> input_buffer;
+    hresult(MFCreateMemoryBuffer((DWORD)size, &input_buffer));
+
+    ComPtr<IMFSample> input_sample;
+    hresult(MFCreateSample(&input_sample));
+    hresult(input_sample->AddBuffer(input_buffer.Get()));
+
+    return input_sample;
+}
+
+static void copy_payload_to_first_buffer(ComPtr<IMFSample> sample, std::span<uint8_t> payload) {
+    ComPtr<IMFMediaBuffer> media_buffer;
+    hresult(sample->GetBufferByIndex(0, &media_buffer));
+    BYTE *buffer = nullptr;
+    DWORD size = 0;
+    hresult(media_buffer->Lock(&buffer, &size, nullptr));
+    assert(size >= (DWORD)payload.size());
+    std::memcpy(buffer, payload.data(), payload.size());
+    hresult(media_buffer->Unlock());
+}
+
 int main() {
     std::println("Initialising COM");
 
@@ -221,14 +243,9 @@ int main() {
     hresult(MFCreateSample(&output_sample));
     hresult(output_sample->AddBuffer(output_buffer.Get()));
 
-    // Create input sample.
-
-    ComPtr<IMFMediaBuffer> input_buffer;
-    hresult(MFCreateMemoryBuffer(input_stream_info.cbSize, &input_buffer));
-
-    ComPtr<IMFSample> input_sample;
-    hresult(MFCreateSample(&input_sample));
-    hresult(input_sample->AddBuffer(input_buffer.Get()));
+    MFT_OUTPUT_DATA_BUFFER output_sample_buffer = {};
+    output_sample_buffer.dwStreamID = 0;
+    output_sample_buffer.pSample = output_sample.Get();
 
     ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
     std::println("Received {} bytes; server port is {}", bytes_received, server_port);
@@ -245,22 +262,96 @@ int main() {
 
     std::println("Sent first packet to server", bytes_received, server_port);
 
+    ComPtr<IMFSample> parameter_sets_sample;
+    std::vector<ComPtr<IMFSample>> video_samples;
     while (true) {
         DWORD flags = 0;
         if (WSARecv(socket, &wsa_receive_buffer, 1, &bytes_received, &flags, NULL, NULL) != 0) {
             THROW_WSA(WSARecv);
         }
 
-        Packet_Header &packet_header = *(Packet_Header *)receive_buffer.data();
-        assert(packet_header.format_index >= 0);
+        Packet_Header &header = *(Packet_Header *)receive_buffer.data();
+        assert(header.format_index >= 0);
 
-        std::span<uint8_t> packet_data = { receive_buffer.begin() + header_size, receive_buffer.begin() + bytes_received };
-        bool has_parameter_sets = is_parameter_sets(packet_data);
+        std::span<uint8_t> payload = { receive_buffer.begin() + header_size, receive_buffer.begin() + bytes_received };
+        bool has_parameter_sets = is_parameter_sets(payload);
 
-        std::println("Received {} bytes: {{ frame_index: {}, packet_index: {}, packet_count: {}, format_index: {} }}", bytes_received, packet_header.frame_index, packet_header.packet_index, packet_header.packet_count, packet_header.format_index);
+        std::println("Received {} bytes: {{ frame_index: {}, packet_index: {}, packet_count: {}, format_index: {} }}", bytes_received, header.frame_index, header.packet_index, header.packet_count, header.format_index);
 
         if (has_parameter_sets) {
-            std::println("\tHas parameter sets");
+            std::println("Adding parameter sets");
+
+            assert(parameter_sets_sample == nullptr);
+
+            parameter_sets_sample = create_sample(payload.size());
+            copy_payload_to_first_buffer(parameter_sets_sample, payload);
+
+            hresult(decoder->ProcessInput(0, parameter_sets_sample.Get(), 0));
+
+            std::println("Parameter sets sample processed");
+
+            DWORD output_status = 0;
+            hresult(decoder->GetOutputStatus(&output_status));
+
+            if (output_status & MFT_OUTPUT_STATUS_SAMPLE_READY) {
+                std::println("Can process output after parameter sets");
+
+                DWORD status = 0;
+                HRESULT result = decoder->ProcessOutput(0, 1, &output_sample_buffer, &status);
+
+                if (output_sample_buffer.pEvents != nullptr) {
+                    output_sample_buffer.pEvents->Release();
+                    output_sample_buffer.pEvents = nullptr;
+                }
+
+                output_sample_buffer.dwStatus = 0;
+            }
+        } else {
+            std::println("Adding video sample");
+
+            ComPtr<IMFSample> sample = create_sample(payload.size());
+            copy_payload_to_first_buffer(sample, payload);
+
+            video_samples.push_back(sample);
+        }
+
+        if (parameter_sets_sample != nullptr) {
+            for (ComPtr<IMFSample> sample : video_samples) {
+                hresult(decoder->ProcessInput(0, sample.Get(), 0));
+
+                DWORD output_status = 0;
+                hresult(decoder->GetOutputStatus(&output_status));
+
+                if (output_status & MFT_OUTPUT_STATUS_SAMPLE_READY) {
+                    std::println("Sample ready; processing output");
+
+                    DWORD status = 0;
+                    HRESULT result = decoder->ProcessOutput(0, 1, &output_sample_buffer, &status);
+
+                    if (result == MF_E_TRANSFORM_NEED_MORE_INPUT) {
+                        std::println("Need more input");
+                    } else if (result != S_OK) {
+                        hresult(result);
+                    } else {
+                        std::println("Video sample processed");
+                    }
+
+                    if (output_sample_buffer.pEvents != nullptr) {
+                        output_sample_buffer.pEvents->Release();
+                        output_sample_buffer.pEvents = nullptr;
+                    }
+
+                    output_sample_buffer.dwStatus = 0;
+                } else {
+                    std::println("Sample not ready after video frame");
+                }
+
+                sample = nullptr;
+            }
+
+            video_samples.clear();
+        } else {
+            std::println("Waiting for parameter sets");
         }
     }
 }
