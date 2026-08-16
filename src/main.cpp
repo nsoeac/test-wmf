@@ -12,6 +12,7 @@ struct Packet_Header {
     int32_t packet_index;
     int32_t packet_count;
     int32_t format_index;
+    int64_t timestamp;
 };
 
 static constexpr std::string_view config_path = ".\\config.txt";
@@ -68,15 +69,18 @@ static bool is_parameter_sets(std::span<uint8_t> &buffer) {
     return is_header_type;
 }
 
-static ComPtr<IMFSample> create_sample(size_t size) {
+static ComPtr<IMFSample> create_sample(size_t size, int64_t sample_time, int64_t sample_duration) {
     ComPtr<IMFMediaBuffer> input_buffer;
     hresult(MFCreateMemoryBuffer((DWORD)size, &input_buffer));
 
-    ComPtr<IMFSample> input_sample;
-    hresult(MFCreateSample(&input_sample));
-    hresult(input_sample->AddBuffer(input_buffer.Get()));
+    ComPtr<IMFSample> sample;
+    hresult(MFCreateSample(&sample));
+    hresult(sample->AddBuffer(input_buffer.Get()));
 
-    return input_sample;
+    hresult(sample->SetSampleTime(sample_time));
+    hresult(sample->SetSampleDuration(sample_duration));
+
+    return sample;
 }
 
 static void copy_payload_to_first_buffer(ComPtr<IMFSample> sample, std::span<uint8_t> payload) {
@@ -88,6 +92,12 @@ static void copy_payload_to_first_buffer(ComPtr<IMFSample> sample, std::span<uin
     assert(size >= (DWORD)payload.size());
     std::memcpy(buffer, payload.data(), payload.size());
     hresult(media_buffer->Unlock());
+}
+
+// Timestamps are in nanoseconds, but the result is in hundreds of nanoseconds since the start timestamp.
+static int64_t get_sample_time(int64_t start_timestamp, int64_t end_timestamp) {
+    int64_t sample_time = (end_timestamp - start_timestamp) / 100;
+    return sample_time;
 }
 
 int main() {
@@ -187,7 +197,6 @@ int main() {
     int video_width = initial_values[1];
     int video_height = initial_values[2];
     int video_framerate = initial_values[3];
-    std::ignore = video_framerate;
 
     // Set input and output types.
 
@@ -263,6 +272,8 @@ int main() {
     std::println("Sent first packet to server", bytes_received, server_port);
 
     ComPtr<IMFSample> parameter_sets_sample;
+    int64_t start_timestamp = INT64_MIN;
+    int64_t sample_duration = 10'000'000 /* Hundred-nanoseconds in a second. */ / video_framerate;
     std::vector<ComPtr<IMFSample>> video_samples;
     while (true) {
         DWORD flags = 0;
@@ -276,14 +287,19 @@ int main() {
         std::span<uint8_t> payload = { receive_buffer.begin() + header_size, receive_buffer.begin() + bytes_received };
         bool has_parameter_sets = is_parameter_sets(payload);
 
-        std::println("Received {} bytes: {{ frame_index: {}, packet_index: {}, packet_count: {}, format_index: {} }}", bytes_received, header.frame_index, header.packet_index, header.packet_count, header.format_index);
+        std::println("Received {} bytes: {{ frame_index: {}, packet_index: {}, packet_count: {}, format_index: {}: timestamp: {} }}", bytes_received, header.frame_index, header.packet_index, header.packet_count, header.format_index, header.timestamp);
 
         if (has_parameter_sets) {
-            std::println("Adding parameter sets");
 
             assert(parameter_sets_sample == nullptr);
 
-            parameter_sets_sample = create_sample(payload.size());
+            if (start_timestamp == INT64_MIN) {
+                start_timestamp = header.timestamp;
+            }
+
+            int64_t sample_time = get_sample_time(start_timestamp, header.timestamp);
+            std::println("Adding parameter sets with timestamp {}", sample_time);
+            parameter_sets_sample = create_sample(payload.size(), sample_time, 0);
             copy_payload_to_first_buffer(parameter_sets_sample, payload);
 
             hresult(decoder->ProcessInput(0, parameter_sets_sample.Get(), 0));
@@ -297,7 +313,7 @@ int main() {
                 std::println("Can process output after parameter sets");
 
                 DWORD status = 0;
-                HRESULT result = decoder->ProcessOutput(0, 1, &output_sample_buffer, &status);
+                decoder->ProcessOutput(0, 1, &output_sample_buffer, &status);
 
                 if (output_sample_buffer.pEvents != nullptr) {
                     output_sample_buffer.pEvents->Release();
@@ -307,9 +323,9 @@ int main() {
                 output_sample_buffer.dwStatus = 0;
             }
         } else {
-            std::println("Adding video sample");
-
-            ComPtr<IMFSample> sample = create_sample(payload.size());
+            int64_t sample_time = get_sample_time(start_timestamp, header.timestamp);
+            std::println("Adding video sample with timestamp {}", sample_time);
+            ComPtr<IMFSample> sample = create_sample(payload.size(), sample_time, sample_duration);
             copy_payload_to_first_buffer(sample, payload);
 
             video_samples.push_back(sample);
@@ -327,6 +343,7 @@ int main() {
 
                     DWORD status = 0;
                     HRESULT result = decoder->ProcessOutput(0, 1, &output_sample_buffer, &status);
+                    assert(status == 0);
 
                     if (result == MF_E_TRANSFORM_NEED_MORE_INPUT) {
                         std::println("Need more input");
