@@ -43,6 +43,8 @@
 #include <wmcodecdsp.h>
 #include <wmcontainer.h>
 
+#include <dvdmedia.h>
+
 #pragma warning(pop)
 
 #include <print>

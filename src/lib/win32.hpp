@@ -3,7 +3,7 @@
 std::string get_win32_error_from_code(DWORD error_code);
 std::string get_win32_error();
 std::string get_wsa_error();
-void check_hresult(HRESULT result);
+void hresult(HRESULT result);
 
 #define THROW_WIN32(function)                                                                                                            \
     do {                                                                                                                                 \

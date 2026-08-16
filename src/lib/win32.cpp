@@ -25,14 +25,32 @@ std::string get_wsa_error() {
     return error;
 }
 
-void check_hresult(HRESULT result) {
+void hresult(HRESULT result) {
     if (!SUCCEEDED(result)) {
         _com_error error(result);
-        const wchar_t *buffer = error.ErrorMessage();
-        size_t length = wcslen(buffer);
+        const wchar_t *error_message = error.ErrorMessage();
+        const wchar_t *description = error.Description();
+        const wchar_t *help_file = error.HelpFile();
+        const wchar_t *source = error.Source();
+        GUID guid = error.GUID();
 
-        std::string message = convert({ buffer, buffer + length });
-        std::println("HRESULT {}: {}", result, message);
+        auto print_valid_string = [](const wchar_t *string) -> void {
+            if (string == nullptr) {
+                return;
+            }
+            
+            size_t length = wcslen(string);
+            bool valid = (length != -1) && (length > 0);
+
+            if (valid) {
+                std::println("{}", convert(string));
+            }
+        };
+
+        std::println("HRESULT {}: {}", result, convert(error_message));
+        print_valid_string(description);
+        print_valid_string(help_file);
+        print_valid_string(source);
 
         abort();
     }

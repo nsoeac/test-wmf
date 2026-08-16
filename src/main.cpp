@@ -52,7 +52,7 @@ struct Packet_Header {
 int main() {
     std::println("Initialising COM");
 
-    check_hresult(CoInitialize(NULL));
+    hresult(CoInitialize(NULL));
 
     std::println("Creating decoder");
 
@@ -67,13 +67,13 @@ int main() {
         output.guidSubtype = MFVideoFormat_NV12;
         IMFActivate **activates = nullptr;
         UINT32 activate_count = 0;
-        check_hresult(MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER, &input, &output, &activates, &activate_count));
+        hresult(MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER, &input, &output, &activates, &activate_count));
 
         if (activate_count == 0) {
             throw std::runtime_error("Could not find any video decoders");
         }
 
-        check_hresult(activates[0]->ActivateObject(IID_PPV_ARGS(&decoder)));
+        hresult(activates[0]->ActivateObject(IID_PPV_ARGS(&decoder)));
 
         // Clean up.
 
@@ -146,9 +146,43 @@ int main() {
     int video_width = initial_values[1];
     int video_height = initial_values[2];
     int video_framerate = initial_values[3];
-    std::ignore = video_width;
-    std::ignore = video_height;
     std::ignore = video_framerate;
+
+    // Set input and output types.
+
+    std::println("Setting decoder input type");
+
+    for (DWORD i = 0;; i++) {
+        ComPtr<IMFMediaType> input;
+        hresult(decoder->GetInputAvailableType(0, i, &input));
+
+        GUID major_type = {};
+        hresult(input->GetMajorType(&major_type));
+        GUID subtype = {};
+        hresult(input->GetGUID(MF_MT_SUBTYPE, &subtype));
+        if ((major_type == MFMediaType_Video) && (subtype == MFVideoFormat_HEVC)) {
+            hresult(MFSetAttributeSize(input.Get(), MF_MT_FRAME_SIZE, video_width, video_height));
+            hresult(decoder->SetInputType(0, input.Get(), 0));
+            std::println("Input type set");
+            break;
+        }
+    }
+
+    std::println("Setting decoder output type");
+
+    for (DWORD i = 0;; i++) {
+        ComPtr<IMFMediaType> output;
+        hresult(decoder->GetOutputAvailableType(0, i, &output));
+
+        GUID major_type = {};
+        hresult(output->GetMajorType(&major_type));
+        GUID subtype = {};
+        output->GetGUID(MF_MT_SUBTYPE, &subtype);
+        if ((major_type == MFMediaType_Video) && (subtype == MFVideoFormat_NV12)) {
+            hresult(decoder->SetOutputType(0, output.Get(), 0));
+            break;
+        }
+    }
 
     ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
     std::println("Received {} bytes; server port is {}", bytes_received, server_port);
