@@ -4,12 +4,6 @@
 
 struct Decoder {
 private:
-    struct Output_Sample {
-        Microsoft::WRL::ComPtr<IMFSample> sample;
-        Microsoft::WRL::ComPtr<IMFMediaBuffer> media_buffer;
-        MFT_OUTPUT_DATA_BUFFER data_buffer = {};
-    };
-
     struct Frame_Header {
         int32_t frame_index;
         int32_t format_index;
@@ -17,7 +11,6 @@ private:
     };
 
     Microsoft::WRL::ComPtr<IMFTransform> decoder = create_decoder();
-    std::vector<Output_Sample> output_samples;
     MFT_INPUT_STREAM_INFO input_stream_info = {};
     MFT_OUTPUT_STREAM_INFO output_stream_info = {};
 
@@ -28,6 +21,10 @@ private:
     int64_t sample_duration = INT64_MIN;
     bool has_parameter_sets = false;
 
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> d11_context;
+    Microsoft::WRL::ComPtr<IMFMediaBuffer> media_buffer;
+    Microsoft::WRL::ComPtr<IMFSample> output_sample;
+    MFT_OUTPUT_DATA_BUFFER data_buffer = {};
     Microsoft::WRL::ComPtr<ID3D12Device> d12_device;
     Microsoft::WRL::ComPtr<ID3D11Device> d11_device;
     Microsoft::WRL::ComPtr<IDXGIResource1> texture;
@@ -45,7 +42,6 @@ public:
     void handle_packets();
 private:
     void create_texture();
-    Output_Sample create_output_sample();
     void process_sample(Microsoft::WRL::ComPtr<IMFSample> sample);
     void process_frame(std::vector<uint8_t> &frame);
     static bool is_parameter_sets(std::span<uint8_t> buffer);

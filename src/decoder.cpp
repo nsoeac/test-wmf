@@ -6,19 +6,6 @@ using Microsoft::WRL::ComPtr;
 
 Decoder::Decoder(Config &config) : net(config) {}
 
-Decoder::Output_Sample Decoder::create_output_sample() {
-    Output_Sample output_sample;
-    hresult(MFCreateMemoryBuffer(output_stream_info.cbSize, &output_sample.media_buffer));
-
-    hresult(MFCreateSample(&output_sample.sample));
-    hresult(output_sample.sample->AddBuffer(output_sample.media_buffer.Get()));
-
-    output_sample.data_buffer.dwStreamID = 0;
-    output_sample.data_buffer.pSample = output_sample.sample.Get();
-
-    return output_sample;
-}
-
 void Decoder::connect() {
     std::vector<uint8_t> initial_message = net.get_initial_message();
 
@@ -31,6 +18,24 @@ void Decoder::connect() {
 }
 
 void Decoder::create_texture() {
+    if (texture_handle != INVALID_HANDLE_VALUE) {
+        std::println("Destroying old texture");
+
+        d12_texture = nullptr;
+
+        if (CloseHandle(texture_handle) == 0) {
+            THROW_WIN32(CloseHandle);
+        }
+
+        texture_handle = INVALID_HANDLE_VALUE;
+
+        if (texture_mutex) {
+            hresult(texture_mutex->ReleaseSync(0));
+        }
+
+        d11_texture = nullptr;
+    }
+
     D3D11_TEXTURE2D_DESC desc = {};
     desc.Width = video_width;
     desc.Height = video_height;
@@ -45,7 +50,18 @@ void Decoder::create_texture() {
     hresult(d11_texture.As(&texture));
     hresult(texture->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &texture_handle));
     hresult(d12_device->OpenSharedHandle(texture_handle, IID_PPV_ARGS(&d12_texture)));
-    // hresult(d11_texture.As(&texture_mutex));
+    hresult(d11_texture.As(&texture_mutex));
+
+    hresult(MFCreateSample(&output_sample));
+    hresult(MFCreateDXGISurfaceBuffer(IID_ID3D11Texture2D, d11_texture.Get(), 0, FALSE, &media_buffer));
+
+    data_buffer.dwStreamID = 0;
+    data_buffer.pSample = output_sample.Get();
+    hresult(output_sample->AddBuffer(media_buffer.Get()));
+
+    std::println("Acquiring texture mutex");
+
+    hresult(texture_mutex->AcquireSync(0, INFINITE));
 }
 
 void Decoder::init_decoder() {
@@ -79,7 +95,7 @@ void Decoder::init_decoder() {
         UINT reset_token = 0;
 
         D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_0;
-        hresult(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, &feature_level, 1, D3D11_SDK_VERSION, &d11_device, nullptr, nullptr));
+        hresult(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, &feature_level, 1, D3D11_SDK_VERSION, &d11_device, nullptr, &d11_context));
         hresult(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d12_device)));
         hresult(MFCreateDXGIDeviceManager(&reset_token, &device_manager));
         hresult(device_manager->ResetDevice(d11_device.Get(), reset_token));
@@ -147,9 +163,8 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
     hresult(decoder->ProcessInput(0, sample.Get(), 0));
 
     while (true) {
-        Output_Sample output_sample = create_output_sample();
         DWORD status = 0;
-        HRESULT result = decoder->ProcessOutput(0, 1, &output_sample.data_buffer, &status);
+        HRESULT result = decoder->ProcessOutput(0, 1, &data_buffer, &status);
 
         switch (result) {
         case MF_E_TRANSFORM_NEED_MORE_INPUT:
@@ -161,8 +176,8 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
             assert(status & MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS);
             status &= ~MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS;
 
-            assert(output_sample.data_buffer.dwStatus & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE);
-            output_sample.data_buffer.dwStatus &= ~MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE;
+            assert(data_buffer.dwStatus & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE);
+            data_buffer.dwStatus &= ~MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE;
 
             ComPtr<IMFMediaType> output_type;
             hresult(decoder->GetOutputAvailableType(0, 0, &output_type));
@@ -176,18 +191,30 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
 
             continue;
         }
-        case S_OK:
+        case S_OK: {
             std::println("Sample processed");
+
+            ComPtr<IMFDXGIBuffer> dxgi_buffer;
+            hresult(media_buffer.As(&dxgi_buffer));
+
+            std::println("Got DXGI buffer");
+
+            ComPtr<ID3D11Texture2D> sample_texture;
+            hresult(dxgi_buffer->GetResource(IID_PPV_ARGS(&sample_texture)));
+
+            d11_context->CopyResource(d11_texture.Get(), sample_texture.Get());
+
+            std::println("Texture copied");
+
             break;
+        }
         default:
             hresult(result);
         }
 
         assert(status == 0);
-        assert(output_sample.data_buffer.dwStatus == 0);
-        assert(output_sample.data_buffer.pEvents == nullptr);
-
-        output_samples.push_back(output_sample);
+        assert(data_buffer.dwStatus == 0);
+        assert(data_buffer.pEvents == nullptr);
     }
 
 FINISHED:;
