@@ -68,6 +68,122 @@ static Config read_config() {
     return config;
 }
 
+struct Networking {
+    SOCKET socket = INVALID_SOCKET;
+
+    std::vector<uint8_t> receive_buffer = std::vector<uint8_t>(packet_size);
+    WSABUF wsa_receive_buffer = {};
+    DWORD bytes_received = 0;
+
+    std::vector<uint8_t> send_buffer = std::vector<uint8_t>(packet_size);
+    WSABUF wsa_send_buffer = {};
+    DWORD bytes_sent = 0;
+
+    std::wstring address;
+    std::wstring port;
+
+    bool ready_packet_sent = false;
+
+    Networking(Config &config) :
+        address(config.address),
+        port(config.port) {
+        wsa_receive_buffer.buf = (CHAR *)receive_buffer.data();
+        wsa_receive_buffer.len = (ULONG)receive_buffer.size();
+        wsa_send_buffer.buf = (CHAR *)send_buffer.data();
+        wsa_send_buffer.len = (ULONG)send_buffer.size();
+    }
+
+    std::vector<uint8_t> get_initial_message() {
+        std::println("Resolving server address");
+
+        ADDRINFOW hints = {};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        hints.ai_protocol = IPPROTO_UDP;
+        PADDRINFOW send_info = NULL;
+        if (GetAddrInfoW(address.data(), port.data(), &hints, &send_info) != 0) {
+            THROW_WSA(GetAddrInfoW);
+        }
+
+        socket = WSASocketW(hints.ai_family, hints.ai_socktype, hints.ai_protocol, NULL, 0, 0);
+        if (socket == INVALID_SOCKET) {
+            THROW_WSA(WSASocketW);
+        }
+
+        if (WSAConnect(socket, send_info->ai_addr, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
+            THROW_WSA(WSAConnect);
+        }
+
+        std::println("Greeting server");
+
+        if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
+            THROW_WSA(WSASend);
+        }
+
+        std::println("Waiting for server response");
+
+        sockaddr server_address = {};
+        INT server_address_length = sizeof(server_address);
+        DWORD receive_flags = 0;
+        if (WSARecvFrom(socket, &wsa_receive_buffer, 1, &bytes_received, &receive_flags, &server_address, &server_address_length, NULL, NULL) != 0) {
+            THROW_WSA(WSARecvFrom);
+        }
+
+        if (bytes_received < 4) {
+            throw std::runtime_error("Expected 4 bytes for the server receive port");
+        }
+
+        std::vector<uint8_t> initial_message = { receive_buffer.begin(), receive_buffer.begin() + bytes_received };
+
+        assert(initial_message.size() >= (sizeof(int32_t) * 4));
+        std::span<int32_t> initial_values = { (int32_t *)(initial_message.data()), (int32_t *)(initial_message.data() + sizeof(int32_t) * 4) };
+
+        uint16_t server_port = (uint16_t)initial_values[0];
+        if (server_port == 0) {
+            throw std::runtime_error(std::format("Server receive port is {}", server_port));
+        }
+
+        ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
+        std::println("Received {} bytes; server port is {}", bytes_received, server_port);
+
+        if (WSAConnect(socket, &server_address, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
+            THROW_WSA(WSAConnect);
+        }
+
+        return initial_message;
+    }
+
+    [[nodiscard]] std::vector<uint8_t> receive() {
+        if (!ready_packet_sent) {
+            std::println("Sending 'ready' packet to server");
+
+            if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
+                THROW_WSA(WSASend);
+            }
+
+            ready_packet_sent = true;
+        }
+
+        std::vector<uint8_t> result(packet_size);
+
+        {
+            std::println("Waiting to receive from server");
+
+            DWORD flags = 0;
+            if (WSARecv(socket, &wsa_receive_buffer, 1, &bytes_received, &flags, NULL, NULL) != 0) {
+                THROW_WSA(WSARecv);
+            }
+
+            std::println("Received {} bytes from server", bytes_received);
+        }
+
+        std::memcpy(result.data(), receive_buffer.data(), bytes_received);
+        result.resize(bytes_received);
+
+        return result;
+    }
+};
+
 static bool is_parameter_sets(std::span<uint8_t> buffer) {
     Bitstream_Reader reader(buffer);
     assert(reader.can_read_bytes(6));
@@ -119,22 +235,48 @@ static int64_t get_sample_time(int64_t start_timestamp, int64_t end_timestamp) {
     return sample_time;
 }
 
-struct App {
-    SOCKET socket = INVALID_SOCKET;
+static ComPtr<IMFTransform> create_decoder() {
+    std::println("Creating decoder");
+
+    MFT_REGISTER_TYPE_INFO input = {};
+    input.guidMajorType = MFMediaType_Video;
+    input.guidSubtype = MFVideoFormat_HEVC;
+    MFT_REGISTER_TYPE_INFO output = {};
+    output.guidMajorType = MFMediaType_Video;
+    output.guidSubtype = MFVideoFormat_NV12;
+    IMFActivate **activates = nullptr;
+    UINT32 activate_count = 0;
+    hresult(MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER, &input, &output, &activates, &activate_count));
+
+    if (activate_count == 0) {
+        throw std::runtime_error("Could not find any video decoders");
+    }
 
     ComPtr<IMFTransform> decoder;
+    hresult(activates[0]->ActivateObject(IID_PPV_ARGS(&decoder)));
+
+    // Clean up.
+
+    for (UINT32 i = 0; i < activate_count; i++) {
+        activates[i]->Release();
+    }
+
+    CoTaskMemFree(activates);
+    return decoder;
+}
+
+struct Output_Sample {
+    ComPtr<IMFSample> sample;
+    ComPtr<IMFMediaBuffer> media_buffer;
+    MFT_OUTPUT_DATA_BUFFER data_buffer = {};
+};
+
+struct App {
+    ComPtr<IMFTransform> decoder = create_decoder();
     ComPtr<IMFSample> parameter_sets_sample;
-    std::vector<ComPtr<IMFSample>> video_samples;
+    std::vector<Output_Sample> output_samples;
     MFT_INPUT_STREAM_INFO input_stream_info = {};
     MFT_OUTPUT_STREAM_INFO output_stream_info = {};
-    std::vector<MFT_OUTPUT_DATA_BUFFER> output_buffers;
-
-    std::vector<uint8_t> receive_buffer = std::vector<uint8_t>(packet_size);
-    WSABUF wsa_receive_buffer = {};
-    DWORD bytes_received = 0;
-    std::vector<uint8_t> send_buffer = std::vector<uint8_t>(packet_size);
-    WSABUF wsa_send_buffer = {};
-    DWORD bytes_sent = 0;
 
     int video_width = -1;
     int video_height = -1;
@@ -142,154 +284,39 @@ struct App {
     int64_t start_timestamp = INT64_MIN;
     int64_t sample_duration = INT64_MIN;
 
-    bool ready_packet_sent = false;
-
     std::vector<Frame> frames;
     std::vector<Frame> completed_frames;
     std::vector<Packet> packets;
 
-    App() {
-        wsa_receive_buffer.buf = (CHAR *)receive_buffer.data();
-        wsa_receive_buffer.len = (ULONG)receive_buffer.size();
-        wsa_send_buffer.buf = (CHAR *)send_buffer.data();
-        wsa_send_buffer.len = (ULONG)send_buffer.size();
+    Networking net;
+
+    App(Config &config) : net(config) {}
+
+    Output_Sample create_output_sample() {
+        Output_Sample output_sample;
+        hresult(MFCreateMemoryBuffer(output_stream_info.cbSize, &output_sample.media_buffer));
+
+        hresult(MFCreateSample(&output_sample.sample));
+        hresult(output_sample.sample->AddBuffer(output_sample.media_buffer.Get()));
+
+        output_sample.data_buffer.dwStreamID = 0;
+        output_sample.data_buffer.pSample = output_sample.sample.Get();
+
+        return output_sample;
     }
 
-    MFT_OUTPUT_DATA_BUFFER get_output_buffer() {
-        ComPtr<IMFMediaBuffer> media_buffer;
-        hresult(MFCreateMemoryBuffer(output_stream_info.cbSize, &media_buffer));
-
-        ComPtr<IMFSample> sample;
-        hresult(MFCreateSample(&sample));
-        hresult(sample->AddBuffer(media_buffer.Get()));
-
-        MFT_OUTPUT_DATA_BUFFER buffer = {};
-        buffer.dwStreamID = 0;
-        buffer.pSample = sample.Get();
-
-        return buffer;
-    }
-
-    void connect(Config &config) {
-        std::println("Resolving server address");
-
-        ADDRINFOW hints = {};
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_DGRAM;
-        hints.ai_protocol = IPPROTO_UDP;
-        PADDRINFOW send_info = NULL;
-        if (GetAddrInfoW(config.address.data(), config.port.data(), &hints, &send_info) != 0) {
-            THROW_WSA(GetAddrInfoW);
-        }
-
-        socket = WSASocketW(hints.ai_family, hints.ai_socktype, hints.ai_protocol, NULL, 0, 0);
-        if (socket == INVALID_SOCKET) {
-            THROW_WSA(WSASocketW);
-        }
-
-        if (WSAConnect(socket, send_info->ai_addr, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
-            THROW_WSA(WSAConnect);
-        }
-
-        std::println("Greeting server");
-
-        if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
-            THROW_WSA(WSASend);
-        }
-
-        std::println("Waiting for server response");
-
-        sockaddr server_address = {};
-        INT server_address_length = sizeof(server_address);
-        DWORD receive_flags = 0;
-        if (WSARecvFrom(socket, &wsa_receive_buffer, 1, &bytes_received, &receive_flags, &server_address, &server_address_length, NULL, NULL) != 0) {
-            THROW_WSA(WSARecvFrom);
-        }
-
-        if (bytes_received < 4) {
-            throw std::runtime_error("Expected 4 bytes for the server receive port");
-        }
+    void connect() {
+        std::vector<uint8_t> initial_message = net.get_initial_message();
 
         std::println("Setting up initial state");
 
-        std::span<int32_t> initial_values = { (int32_t *)(receive_buffer.data()), (int32_t *)(receive_buffer.data() + sizeof(int32_t) * 4) };
-
-        uint16_t server_port = (uint16_t)initial_values[0];
-        if (server_port == 0) {
-            throw std::runtime_error(std::format("Server receive port is {}", server_port));
-        }
-
+        std::span<int32_t> initial_values = { (int32_t *)(initial_message.data()), (int32_t *)(initial_message.data() + sizeof(int32_t) * 4) };
         video_width = initial_values[1];
         video_height = initial_values[2];
         video_framerate = initial_values[3];
-
-        ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
-        std::println("Received {} bytes; server port is {}", bytes_received, server_port);
-
-        if (WSAConnect(socket, &server_address, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
-            THROW_WSA(WSAConnect);
-        }
-    }
-
-    [[nodiscard]] std::vector<uint8_t> receive() {
-        if (!ready_packet_sent) {
-            std::println("Sending 'ready' packet to server");
-
-            if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
-                THROW_WSA(WSASend);
-            }
-
-            ready_packet_sent = true;
-        }
-
-        std::vector<uint8_t> result(packet_size);
-
-        {
-            std::println("Waiting to receive from server");
-
-            DWORD flags = 0;
-            if (WSARecv(socket, &wsa_receive_buffer, 1, &bytes_received, &flags, NULL, NULL) != 0) {
-                THROW_WSA(WSARecv);
-            }
-
-            std::println("Received {} bytes from server", bytes_received);
-        }
-
-        std::memcpy(result.data(), receive_buffer.data(), bytes_received);
-        result.resize(bytes_received);
-
-        return result;
     }
 
     void init_decoder() {
-        std::println("Creating decoder");
-
-        {
-            MFT_REGISTER_TYPE_INFO input = {};
-            input.guidMajorType = MFMediaType_Video;
-            input.guidSubtype = MFVideoFormat_HEVC;
-            MFT_REGISTER_TYPE_INFO output = {};
-            output.guidMajorType = MFMediaType_Video;
-            output.guidSubtype = MFVideoFormat_NV12;
-            IMFActivate **activates = nullptr;
-            UINT32 activate_count = 0;
-            hresult(MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER, &input, &output, &activates, &activate_count));
-
-            if (activate_count == 0) {
-                throw std::runtime_error("Could not find any video decoders");
-            }
-
-            hresult(activates[0]->ActivateObject(IID_PPV_ARGS(&decoder)));
-
-            // Clean up.
-
-            for (UINT32 i = 0; i < activate_count; i++) {
-                activates[i]->Release();
-            }
-
-            CoTaskMemFree(activates);
-        }
-
         std::println("Setting decoder input type");
 
         for (DWORD i = 0;; i++) {
@@ -329,11 +356,61 @@ struct App {
         hresult(decoder->GetInputStreamInfo(0, &input_stream_info));
         hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
 
-        // TODO: DO NOT FORGET THAT MFT_INPUT_STREAM_WHOLE_SAMPLES IS SET IN THIS CONFIGURATION SO IF DECODING DOESN'T WORK BREAK THE PARAMETER SETS INTO 3 PACKETS AND PASS THEM IN SEPARATELY.
-
         hresult(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
 
         sample_duration = 10'000'000 /* Hundred-nanoseconds in a second. */ / video_framerate;
+    }
+
+    void process_sample(ComPtr<IMFSample> sample) {
+        std::println("Processing input");
+
+        hresult(decoder->ProcessInput(0, sample.Get(), 0));
+
+        std::println("Processing output");
+
+        while (true) {
+            Output_Sample output_sample = create_output_sample();
+            DWORD status = 0;
+            HRESULT result = decoder->ProcessOutput(0, 1, &output_sample.data_buffer, &status);
+
+            switch (result) {
+            case MF_E_TRANSFORM_NEED_MORE_INPUT:
+                std::println("Input drained");
+                goto FINISHED;
+            case MF_E_TRANSFORM_STREAM_CHANGE: {
+                std::println("Handling stream change");
+
+                assert(status & MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS);
+                status &= ~MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS;
+
+                assert(output_sample.data_buffer.dwStatus & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE);
+                output_sample.data_buffer.dwStatus &= ~MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE;
+
+                ComPtr<IMFMediaType> output_type;
+                hresult(decoder->GetOutputAvailableType(0, 0, &output_type));
+                hresult(decoder->SetOutputType(0, output_type.Get(), 0));
+
+                hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
+
+                std::println("Stream change handled");
+
+                continue;
+            }
+            case S_OK:
+                std::println("Sample processed");
+                break;
+            default:
+                hresult(result);
+            }
+
+            assert(status == 0);
+            assert(output_sample.data_buffer.dwStatus == 0);
+            assert(output_sample.data_buffer.pEvents == nullptr);
+
+            output_samples.push_back(output_sample);
+        }
+
+    FINISHED:;
     }
 
     void process_frame(Frame &frame) {
@@ -352,108 +429,26 @@ struct App {
             parameter_sets_sample = create_sample(frame.buffer.size(), sample_time, 0);
             copy_payload_to_first_buffer(parameter_sets_sample, frame.buffer);
 
-            hresult(decoder->ProcessInput(0, parameter_sets_sample.Get(), 0));
+            process_sample(parameter_sets_sample);
 
-            std::println("Parameter sets sample processed");
-
-            DWORD output_status = 0;
-            hresult(decoder->GetOutputStatus(&output_status));
-
-            if (output_status & MFT_OUTPUT_STATUS_SAMPLE_READY) {
-                std::println("Can process output after parameter sets");
-
-                DWORD status = 0;
-                MFT_OUTPUT_DATA_BUFFER output_buffer = get_output_buffer();
-                HRESULT result = decoder->ProcessOutput(0, 1, &output_buffer, &status);
-                assert(result == MF_E_TRANSFORM_NEED_MORE_INPUT);
-                assert(status == 0);
-                assert(output_buffer.pEvents == nullptr);
-
-                if (output_buffer.pEvents != nullptr) {
-                    output_buffer.pEvents->Release();
-                    output_buffer.pEvents = nullptr;
-                }
-
-                assert(output_buffer.dwStatus == 0);
-
-                output_buffers.push_back(output_buffer);
-            }
-        } else {
-            int64_t sample_time = get_sample_time(start_timestamp, frame.timestamp);
-            std::println("Adding video sample with timestamp {}", sample_time);
-            ComPtr<IMFSample> sample = create_sample(frame.buffer.size(), sample_time, sample_duration);
-            copy_payload_to_first_buffer(sample, frame.buffer);
-
-            video_samples.push_back(sample);
+            return;
         }
 
-        if (parameter_sets_sample != nullptr) {
-            for (ComPtr<IMFSample> sample : video_samples) {
-                hresult(decoder->ProcessInput(0, sample.Get(), 0));
+        if (!parameter_sets_sample) {
+            std::println("Can't process video frame without parameter sets");
 
-                DWORD output_status = 0;
-                hresult(decoder->GetOutputStatus(&output_status));
-
-                if (output_status & MFT_OUTPUT_STATUS_SAMPLE_READY) {
-                    std::println("Sample ready; processing output");
-
-                    DWORD status = 0;
-                    MFT_OUTPUT_DATA_BUFFER output_buffer = get_output_buffer();
-                    HRESULT result = decoder->ProcessOutput(0, 1, &output_buffer, &status);
-
-                    if (result == MF_E_TRANSFORM_NEED_MORE_INPUT) {
-                        std::println("Need more input");
-                    } else if (result == MF_E_TRANSFORM_STREAM_CHANGE) {
-                        assert(status & MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS);
-                        status &= ~MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS;
-
-                        assert(output_buffer.dwStatus & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE);
-                        output_buffer.dwStatus &= ~MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE;
-
-                        std::println("Handling stream change");
-
-                        DWORD input_count = 0;
-                        DWORD output_count = 0;
-                        hresult(decoder->GetStreamCount(&input_count, &output_count));
-                        assert(input_count == 1);
-                        assert(output_count == 1);
-
-                        ComPtr<IMFMediaType> output_type;
-                        hresult(decoder->GetOutputAvailableType(0, 0, &output_type));
-                        hresult(decoder->SetOutputType(0, output_type.Get(), 0));
-                        hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
-
-                        std::println("Stream change handled");
-
-                        continue;
-                    } else if (result != S_OK) {
-                        hresult(result);
-                    } else {
-                        std::println("Video sample processed");
-                        abort();
-                    }
-
-                    assert(status == 0);
-                    assert(output_buffer.dwStatus == 0);
-                    assert(output_buffer.pEvents == nullptr);
-
-                    if (output_buffer.pEvents != nullptr) {
-                        output_buffer.pEvents->Release();
-                        output_buffer.pEvents = nullptr;
-                    }
-
-                    output_buffers.push_back(output_buffer);
-                } else {
-                    std::println("Sample not ready after video frame");
-                }
-
-                sample = nullptr;
-            }
-
-            video_samples.clear();
-        } else {
-            std::println("Waiting for parameter sets");
+            abort();
         }
+
+        int64_t sample_time = get_sample_time(start_timestamp, frame.timestamp);
+        ComPtr<IMFSample> sample = create_sample(frame.buffer.size(), sample_time, sample_duration);
+        copy_payload_to_first_buffer(sample, frame.buffer);
+
+        std::println("Adding video sample with timestamp {}", sample_time);
+
+        process_sample(sample);
+
+        sample = nullptr;
     }
 
     void fill_completed_frame_buffer(Frame &frame) {
@@ -511,7 +506,7 @@ struct App {
 
             {
                 Packet packet;
-                packet.buffer = receive();
+                packet.buffer = net.receive();
                 assert(packet.buffer.size() >= header_size);
                 packet.payload = { packet.buffer.begin() + header_size, packet.buffer.end() };
                 packet.header = *(Packet_Header *)packet.buffer.data();
@@ -571,8 +566,8 @@ int main() {
 
     Config config = read_config();
 
-    App app;
-    app.connect(config);
+    App app(config);
+    app.connect();
     app.init_decoder();
     app.receive_packets();
 }
