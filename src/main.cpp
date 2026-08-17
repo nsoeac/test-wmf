@@ -109,6 +109,8 @@ static void copy_payload_to_first_buffer(ComPtr<IMFSample> sample, std::span<uin
     assert(size >= (DWORD)payload.size());
     std::memcpy(buffer, payload.data(), payload.size());
     hresult(media_buffer->Unlock());
+
+    hresult(media_buffer->SetCurrentLength((DWORD)payload.size()));
 }
 
 // Timestamps are in nanoseconds, but the result is in hundreds of nanoseconds since the start timestamp.
@@ -123,7 +125,9 @@ struct App {
     ComPtr<IMFTransform> decoder;
     ComPtr<IMFSample> parameter_sets_sample;
     std::vector<ComPtr<IMFSample>> video_samples;
-    MFT_OUTPUT_DATA_BUFFER output_sample_buffer = {};
+    MFT_INPUT_STREAM_INFO input_stream_info = {};
+    MFT_OUTPUT_STREAM_INFO output_stream_info = {};
+    std::vector<MFT_OUTPUT_DATA_BUFFER> output_buffers;
 
     std::vector<uint8_t> receive_buffer = std::vector<uint8_t>(packet_size);
     WSABUF wsa_receive_buffer = {};
@@ -149,6 +153,21 @@ struct App {
         wsa_receive_buffer.len = (ULONG)receive_buffer.size();
         wsa_send_buffer.buf = (CHAR *)send_buffer.data();
         wsa_send_buffer.len = (ULONG)send_buffer.size();
+    }
+
+    MFT_OUTPUT_DATA_BUFFER get_output_buffer() {
+        ComPtr<IMFMediaBuffer> media_buffer;
+        hresult(MFCreateMemoryBuffer(output_stream_info.cbSize, &media_buffer));
+
+        ComPtr<IMFSample> sample;
+        hresult(MFCreateSample(&sample));
+        hresult(sample->AddBuffer(media_buffer.Get()));
+
+        MFT_OUTPUT_DATA_BUFFER buffer = {};
+        buffer.dwStreamID = 0;
+        buffer.pSample = sample.Get();
+
+        return buffer;
     }
 
     void connect(Config &config) {
@@ -307,26 +326,12 @@ struct App {
 
         std::println("Initialising decoder resources");
 
-        MFT_INPUT_STREAM_INFO input_stream_info = {};
-        MFT_OUTPUT_STREAM_INFO output_stream_info = {};
         hresult(decoder->GetInputStreamInfo(0, &input_stream_info));
         hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
 
         // TODO: DO NOT FORGET THAT MFT_INPUT_STREAM_WHOLE_SAMPLES IS SET IN THIS CONFIGURATION SO IF DECODING DOESN'T WORK BREAK THE PARAMETER SETS INTO 3 PACKETS AND PASS THEM IN SEPARATELY.
 
         hresult(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
-
-        // Create output sample.
-
-        ComPtr<IMFMediaBuffer> output_buffer;
-        hresult(MFCreateMemoryBuffer(output_stream_info.cbSize, &output_buffer));
-
-        ComPtr<IMFSample> output_sample;
-        hresult(MFCreateSample(&output_sample));
-        hresult(output_sample->AddBuffer(output_buffer.Get()));
-
-        output_sample_buffer.dwStreamID = 0;
-        output_sample_buffer.pSample = output_sample.Get();
 
         sample_duration = 10'000'000 /* Hundred-nanoseconds in a second. */ / video_framerate;
     }
@@ -358,14 +363,19 @@ struct App {
                 std::println("Can process output after parameter sets");
 
                 DWORD status = 0;
-                decoder->ProcessOutput(0, 1, &output_sample_buffer, &status);
+                MFT_OUTPUT_DATA_BUFFER output_buffer = get_output_buffer();
+                HRESULT result = decoder->ProcessOutput(0, 1, &output_buffer, &status);
+                assert(result == MF_E_TRANSFORM_NEED_MORE_INPUT);
+                assert(status == 0);
 
-                if (output_sample_buffer.pEvents != nullptr) {
-                    output_sample_buffer.pEvents->Release();
-                    output_sample_buffer.pEvents = nullptr;
+                if (output_buffer.pEvents != nullptr) {
+                    output_buffer.pEvents->Release();
+                    output_buffer.pEvents = nullptr;
                 }
 
-                output_sample_buffer.dwStatus = 0;
+                assert(output_buffer.dwStatus == 0);
+
+                output_buffers.push_back(output_buffer);
             }
         } else {
             int64_t sample_time = get_sample_time(start_timestamp, frame.timestamp);
@@ -387,23 +397,47 @@ struct App {
                     std::println("Sample ready; processing output");
 
                     DWORD status = 0;
-                    HRESULT result = decoder->ProcessOutput(0, 1, &output_sample_buffer, &status);
-                    assert(status == 0);
+                    MFT_OUTPUT_DATA_BUFFER output_buffer = get_output_buffer();
+                    HRESULT result = decoder->ProcessOutput(0, 1, &output_buffer, &status);
 
                     if (result == MF_E_TRANSFORM_NEED_MORE_INPUT) {
                         std::println("Need more input");
+                    } else if (result == MF_E_TRANSFORM_STREAM_CHANGE) {
+                        assert(status & MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS);
+                        status &= ~MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS;
+
+                        assert(output_buffer.dwStatus & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE);
+                        output_buffer.dwStatus &= ~MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE;
+
+                        std::println("Handling stream change");
+
+                        DWORD input_count = 0;
+                        DWORD output_count = 0;
+                        hresult(decoder->GetStreamCount(&input_count, &output_count));
+                        assert(input_count == 1);
+                        assert(output_count == 1);
+
+                        ComPtr<IMFMediaType> output_type;
+                        hresult(decoder->GetOutputAvailableType(0, 0, &output_type));
+                        hresult(decoder->SetOutputType(0, output_type.Get(), 0));
+
+                        std::println("Stream change handled");
                     } else if (result != S_OK) {
                         hresult(result);
                     } else {
                         std::println("Video sample processed");
+                        abort();
                     }
 
-                    if (output_sample_buffer.pEvents != nullptr) {
-                        output_sample_buffer.pEvents->Release();
-                        output_sample_buffer.pEvents = nullptr;
+                    assert(status == 0);
+                    assert(output_buffer.dwStatus == 0);
+
+                    if (output_buffer.pEvents != nullptr) {
+                        output_buffer.pEvents->Release();
+                        output_buffer.pEvents = nullptr;
                     }
 
-                    output_sample_buffer.dwStatus = 0;
+                    output_buffers.push_back(output_buffer);
                 } else {
                     std::println("Sample not ready after video frame");
                 }
