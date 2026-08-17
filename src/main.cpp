@@ -7,33 +7,8 @@ struct Config {
     std::wstring address;
 };
 
-struct Packet_Header {
-    int32_t frame_index;
-    int32_t packet_index;
-    int32_t packet_count;
-    int32_t format_index;
-    int64_t timestamp;
-};
-
-struct Frame {
-    int32_t frame_index;
-    int32_t packet_count;
-    int32_t format_index;
-    int64_t timestamp;
-    int32_t next_packet_index = 0;
-    std::vector<uint8_t> buffer;
-};
-
-struct Packet {
-    Packet_Header header;
-    std::vector<uint8_t> buffer;
-    std::span<uint8_t> payload;
-};
-
 static constexpr std::string_view config_path = ".\\config.txt";
 static constexpr int expected_config_line_count = 2;
-static constexpr int packet_size = 1'384;
-static constexpr int header_size = sizeof(Packet_Header);
 
 static Config read_config() {
     std::println("Reading config");
@@ -68,12 +43,122 @@ static Config read_config() {
     return config;
 }
 
-struct Networking {
-    SOCKET socket = INVALID_SOCKET;
+static WSABUF get_wsabuf(std::span<uint8_t> span) {
+    WSABUF wsabuf = {};
+    wsabuf.buf = (CHAR *)span.data();
+    wsabuf.len = (ULONG)span.size();
+    return wsabuf;
+}
 
-    std::vector<uint8_t> receive_buffer = std::vector<uint8_t>(packet_size);
-    WSABUF wsa_receive_buffer = {};
-    DWORD bytes_received = 0;
+struct Networking {
+private:
+    struct Header {
+        int64_t message_index;
+        int64_t packet_index;
+        int64_t packet_count;
+        int64_t placeholder;
+    };
+
+    static constexpr int packet_size = 1'384;
+    static constexpr int header_size = sizeof(Header);
+    static constexpr int payload_size = packet_size - header_size;
+    static constexpr bool print_debug_messages = false;
+
+    struct Packet {
+        std::vector<uint8_t> buffer = std::vector<uint8_t>(packet_size);
+
+        Header header() const {
+            assert(buffer.size() >= header_size);
+
+            Header header;
+            std::memcpy(&header, buffer.data(), sizeof(Header));
+
+            return header;
+        }
+
+        int64_t packet_index() const {
+            assert(buffer.size() >= header_size);
+
+            int64_t packet_index = 0;
+            std::memcpy(&packet_index, buffer.data() + offsetof(Header, packet_index), sizeof(packet_index));
+
+            return packet_index;
+        }
+    };
+
+    struct Message {
+        std::vector<Packet> packets;
+        int64_t message_index = 0;
+        int64_t packet_count = 0;
+
+        bool is_complete() const {
+            return packet_count == (int64_t)packets.size();
+        }
+    };
+
+    std::vector<Message> messages;
+
+    [[nodiscard]] std::vector<uint8_t> remove_message_and_get_payload(Message &message) {
+        assert(message.is_complete());
+
+        // Initialise buffer of appropriate size.
+
+        int64_t buffer_size = std::ranges::fold_left(message.packets, 0, [](int64_t size, Packet &packet) { return size + ((int64_t)packet.buffer.size() - header_size); });
+        std::vector<uint8_t> message_payload(buffer_size);
+
+        // Copy all packet contents to the buffer.
+
+        auto copy_destination = message_payload.begin();
+        for (Packet &packet : message.packets) {
+            std::span<uint8_t> packet_payload = { packet.buffer.begin() + header_size, packet.buffer.end() };
+            std::ranges::copy(packet_payload, copy_destination);
+            copy_destination += packet_payload.size();
+        }
+
+        // Remove the message.
+
+        std::swap(message, messages.back());
+        messages.pop_back();
+
+        return message_payload;
+    }
+
+    // Returns message buffer if it completes a message.
+    [[nodiscard]] std::optional<std::vector<uint8_t>> add_packet(Packet &&packet) {
+        Header header = packet.header();
+
+        auto message_it = std::ranges::find_if(messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Message::message_index);
+
+        // If the message doesn't exist, create it.
+
+        if (message_it == messages.end()) {
+            Message message;
+            message.message_index = header.message_index;
+            message.packet_count = header.packet_count;
+            messages.push_back(message);
+            message_it = std::prev(messages.end());
+        }
+
+        Message &message = *message_it;
+
+        // Add the packet if we don't already have it.
+
+        if (!std::ranges::contains(message.packets, header.packet_index, &Packet::packet_index)) {
+            message.packets.push_back(std::move(packet));
+            std::ranges::sort(message.packets, [](int64_t first_packet_index, int64_t second_packet_index) { return first_packet_index < second_packet_index; }, &Packet::packet_index);
+
+            if (message.is_complete()) {
+                std::vector<uint8_t> buffer = remove_message_and_get_payload(message);
+                return buffer;
+            } else {
+                return std::nullopt;
+            }
+        } else {
+            return std::nullopt;
+        }
+    }
+
+    SOCKET socket = INVALID_SOCKET;
 
     std::vector<uint8_t> send_buffer = std::vector<uint8_t>(packet_size);
     WSABUF wsa_send_buffer = {};
@@ -83,18 +168,18 @@ struct Networking {
     std::wstring port;
 
     bool ready_packet_sent = false;
-
+public:
     Networking(Config &config) :
         address(config.address),
         port(config.port) {
-        wsa_receive_buffer.buf = (CHAR *)receive_buffer.data();
-        wsa_receive_buffer.len = (ULONG)receive_buffer.size();
         wsa_send_buffer.buf = (CHAR *)send_buffer.data();
         wsa_send_buffer.len = (ULONG)send_buffer.size();
     }
 
     std::vector<uint8_t> get_initial_message() {
-        std::println("Resolving server address");
+        if (print_debug_messages) {
+            std::println("Resolving server address");
+        }
 
         ADDRINFOW hints = {};
         hints.ai_family = AF_INET;
@@ -114,17 +199,24 @@ struct Networking {
             THROW_WSA(WSAConnect);
         }
 
-        std::println("Greeting server");
+        if (print_debug_messages) {
+            std::println("Greeting server");
+        }
 
         if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
             THROW_WSA(WSASend);
         }
 
-        std::println("Waiting for server response");
+        if (print_debug_messages) {
+            std::println("Waiting for server response");
+        }
 
         sockaddr server_address = {};
         INT server_address_length = sizeof(server_address);
         DWORD receive_flags = 0;
+        std::vector<uint8_t> receive_buffer(packet_size);
+        DWORD bytes_received = 0;
+        WSABUF wsa_receive_buffer = get_wsabuf(receive_buffer);
         if (WSARecvFrom(socket, &wsa_receive_buffer, 1, &bytes_received, &receive_flags, &server_address, &server_address_length, NULL, NULL) != 0) {
             THROW_WSA(WSARecvFrom);
         }
@@ -144,7 +236,10 @@ struct Networking {
         }
 
         ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
-        std::println("Received {} bytes; server port is {}", bytes_received, server_port);
+
+        if (print_debug_messages) {
+            std::println("Received {} bytes; server port is {}", bytes_received, server_port);
+        }
 
         if (WSAConnect(socket, &server_address, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
             THROW_WSA(WSAConnect);
@@ -155,7 +250,9 @@ struct Networking {
 
     [[nodiscard]] std::vector<uint8_t> receive() {
         if (!ready_packet_sent) {
-            std::println("Sending 'ready' packet to server");
+            if (print_debug_messages) {
+                std::println("Sending 'ready' packet to server");
+            }
 
             if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
                 THROW_WSA(WSASend);
@@ -164,23 +261,37 @@ struct Networking {
             ready_packet_sent = true;
         }
 
-        std::vector<uint8_t> result(packet_size);
-
-        {
-            std::println("Waiting to receive from server");
-
-            DWORD flags = 0;
-            if (WSARecv(socket, &wsa_receive_buffer, 1, &bytes_received, &flags, NULL, NULL) != 0) {
-                THROW_WSA(WSARecv);
-            }
-
-            std::println("Received {} bytes from server", bytes_received);
+        if (print_debug_messages) {
+            std::println("Receiving packets from server");
         }
 
-        std::memcpy(result.data(), receive_buffer.data(), bytes_received);
-        result.resize(bytes_received);
+        std::vector<uint8_t> buffer;
 
-        return result;
+        {
+            std::optional<std::vector<uint8_t>> message_buffer_option = std::nullopt;
+
+            while (message_buffer_option == std::nullopt) {
+                Packet packet;
+                WSABUF packet_wsabuf = get_wsabuf(packet.buffer);
+
+                DWORD bytes_received = 0;
+                DWORD flags = 0;
+                if (WSARecv(socket, &packet_wsabuf, 1, &bytes_received, &flags, NULL, NULL) != 0) {
+                    THROW_WSA(WSARecv);
+                }
+
+                packet.buffer.resize(bytes_received);
+                message_buffer_option = add_packet(std::move(packet));
+            }
+
+            buffer = std::move(*message_buffer_option);
+        }
+
+        if (print_debug_messages) {
+            std::println("Received {} byte(s) from server ({} messages remain)", buffer.size(), messages.size());
+        }
+
+        return buffer;
     }
 };
 
@@ -272,8 +383,13 @@ struct Output_Sample {
 };
 
 struct App {
+    struct Frame_Header {
+        int32_t frame_index;
+        int32_t format_index;
+        int64_t timestamp;
+    };
+
     ComPtr<IMFTransform> decoder = create_decoder();
-    ComPtr<IMFSample> parameter_sets_sample;
     std::vector<Output_Sample> output_samples;
     MFT_INPUT_STREAM_INFO input_stream_info = {};
     MFT_OUTPUT_STREAM_INFO output_stream_info = {};
@@ -283,10 +399,7 @@ struct App {
     int video_framerate = -1;
     int64_t start_timestamp = INT64_MIN;
     int64_t sample_duration = INT64_MIN;
-
-    std::vector<Frame> frames;
-    std::vector<Frame> completed_frames;
-    std::vector<Packet> packets;
+    bool has_parameter_sets = false;
 
     Networking net;
 
@@ -362,11 +475,7 @@ struct App {
     }
 
     void process_sample(ComPtr<IMFSample> sample) {
-        std::println("Processing input");
-
         hresult(decoder->ProcessInput(0, sample.Get(), 0));
-
-        std::println("Processing output");
 
         while (true) {
             Output_Sample output_sample = create_output_sample();
@@ -413,36 +522,41 @@ struct App {
     FINISHED:;
     }
 
-    void process_frame(Frame &frame) {
-        std::println("Processing completed frame {} ({} byte(s)); {} packet(s) remain", frame.frame_index, frame.buffer.size(), packets.size());
+    void process_frame(std::vector<uint8_t> &frame) {
+        Frame_Header header = {};
+        assert(frame.size() >= sizeof(Frame_Header));
+        std::memcpy(&header, frame.data(), sizeof(Frame_Header));
+        std::span<uint8_t> payload = { frame.begin() + sizeof(Frame_Header), frame.end() };
 
-        bool has_parameter_sets = is_parameter_sets(frame.buffer);
-        if (has_parameter_sets) {
-            assert(parameter_sets_sample == nullptr);
+        std::println("Processing frame {} ({} byte(s))", header.frame_index, payload.size());
+
+        if (is_parameter_sets(payload)) {
+            ComPtr<IMFSample> parameter_sets_sample;
 
             if (start_timestamp == INT64_MIN) {
-                start_timestamp = frame.timestamp;
+                start_timestamp = header.timestamp;
             }
 
-            int64_t sample_time = get_sample_time(start_timestamp, frame.timestamp);
+            int64_t sample_time = get_sample_time(start_timestamp, header.timestamp);
             std::println("Adding parameter sets with timestamp {}", sample_time);
-            parameter_sets_sample = create_sample(frame.buffer.size(), sample_time, 0);
-            copy_payload_to_first_buffer(parameter_sets_sample, frame.buffer);
+            parameter_sets_sample = create_sample(payload.size(), sample_time, 0);
+            copy_payload_to_first_buffer(parameter_sets_sample, payload);
 
             process_sample(parameter_sets_sample);
 
+            has_parameter_sets = true;
             return;
         }
 
-        if (!parameter_sets_sample) {
+        if (!has_parameter_sets) {
             std::println("Can't process video frame without parameter sets");
 
             abort();
         }
 
-        int64_t sample_time = get_sample_time(start_timestamp, frame.timestamp);
-        ComPtr<IMFSample> sample = create_sample(frame.buffer.size(), sample_time, sample_duration);
-        copy_payload_to_first_buffer(sample, frame.buffer);
+        int64_t sample_time = get_sample_time(start_timestamp, header.timestamp);
+        ComPtr<IMFSample> sample = create_sample(payload.size(), sample_time, sample_duration);
+        copy_payload_to_first_buffer(sample, payload);
 
         std::println("Adding video sample with timestamp {}", sample_time);
 
@@ -451,101 +565,10 @@ struct App {
         sample = nullptr;
     }
 
-    void fill_completed_frame_buffer(Frame &frame) {
-        std::ranges::sort(packets, [](Packet &first, Packet &second) {
-            if (first.header.frame_index < second.header.frame_index) {
-                return true;
-            } else if (second.header.frame_index < first.header.frame_index) {
-                return false;
-            } else if (first.header.packet_index < second.header.packet_index) {
-                return true;
-            } else if (second.header.packet_index < first.header.packet_index) {
-                return false;
-            } else {
-                abort(); // Not expecting duplicate frames.
-            }
-        });
-
-        std::vector<Packet>::iterator start_it = std::ranges::find_if(packets, [&frame](Packet &packet) { return packet.header.frame_index == frame.frame_index; });
-        std::vector<Packet>::iterator end_it = start_it + frame.packet_count;
-
-        size_t frame_size = 0;
-        for (auto it = start_it; it < end_it; ++it) {
-            Packet &packet = *it;
-            frame_size += packet.payload.size();
-        }
-
-        frame.buffer.resize(frame_size);
-
-        // Copy contents.
-
-        auto copy_dest = frame.buffer.begin();
-        size_t expected_packet_index = 0;
-        for (auto it = start_it; it < end_it; ++it) {
-            Packet &packet = *it;
-
-            assert(packet.header.packet_index == expected_packet_index);
-
-            std::ranges::copy(packet.payload, copy_dest);
-            copy_dest += packet.payload.size();
-
-            expected_packet_index++;
-        }
-
-        assert(copy_dest == frame.buffer.end());
-
-        // Remove packets.
-
-        auto remove_range = std::ranges::remove_if(packets, [&frame](Packet &packet) { return packet.header.frame_index == frame.frame_index; });
-        packets.erase(remove_range.begin(), remove_range.end());
-    }
-
-    void receive_packets() {
+    void handle_packets() {
         while (true) {
-            // Get the packet.
-
-            {
-                Packet packet;
-                packet.buffer = net.receive();
-                assert(packet.buffer.size() >= header_size);
-                packet.payload = { packet.buffer.begin() + header_size, packet.buffer.end() };
-                packet.header = *(Packet_Header *)packet.buffer.data();
-                packets.push_back(std::move(packet));
-            }
-
-            // Check if the packet completes a frame.
-
-            {
-                Packet &packet = packets.back();
-                std::vector<Frame>::iterator frame_it = std::ranges::find_if(frames, [&packet](int32_t frame_index) { return packet.header.frame_index == frame_index; }, [this](Frame &frame) { return frame.frame_index; });
-
-                // Add frame if it doesn't exist.
-
-                if (frame_it == frames.end()) {
-                    Frame new_frame;
-                    new_frame.frame_index = packet.header.frame_index;
-                    new_frame.packet_count = packet.header.packet_count;
-                    new_frame.format_index = packet.header.format_index;
-                    new_frame.timestamp = packet.header.timestamp;
-                    frames.push_back(new_frame);
-                    frame_it = std::prev(frames.end());
-                }
-
-                Frame &frame = *frame_it;
-
-                if (packet.header.packet_index == frame.next_packet_index) {
-                    frame.next_packet_index++;
-                }
-
-                if (frame.next_packet_index == frame.packet_count) {
-                    std::swap(frame, frames.back());
-                    Frame completed_frame = std::move(frame);
-                    frames.pop_back();
-
-                    fill_completed_frame_buffer(completed_frame);
-                    process_frame(completed_frame);
-                }
-            }
+            std::vector<uint8_t> frame = net.receive();
+            process_frame(frame);
         }
     }
 };
@@ -569,5 +592,5 @@ int main() {
     App app(config);
     app.connect();
     app.init_decoder();
-    app.receive_packets();
+    app.handle_packets();
 }
