@@ -28,6 +28,15 @@ private:
     int64_t sample_duration = INT64_MIN;
     bool has_parameter_sets = false;
 
+    Microsoft::WRL::ComPtr<ID3D12Device> d12_device;
+    Microsoft::WRL::ComPtr<ID3D11Device> d11_device;
+    Microsoft::WRL::ComPtr<IDXGIResource1> texture;
+    Microsoft::WRL::ComPtr<IDXGIKeyedMutex> texture_mutex;
+    HANDLE texture_handle = INVALID_HANDLE_VALUE;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> d11_texture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> d12_texture;
+    Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> device_manager;
+
     Networking net;
 public:
     Decoder(Config &config);
@@ -35,6 +44,7 @@ public:
     void init_decoder();
     void handle_packets();
 private:
+    void create_texture();
     Output_Sample create_output_sample();
     void process_sample(Microsoft::WRL::ComPtr<IMFSample> sample);
     void process_frame(std::vector<uint8_t> &frame);

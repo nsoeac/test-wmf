@@ -30,7 +30,61 @@ void Decoder::connect() {
     video_framerate = initial_values[3];
 }
 
+void Decoder::create_texture() {
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = video_width;
+    desc.Height = video_height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_NV12;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    hresult(d11_device->CreateTexture2D(&desc, nullptr, &d11_texture));
+    hresult(d11_texture.As(&texture));
+    hresult(texture->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &texture_handle));
+    hresult(d12_device->OpenSharedHandle(texture_handle, IID_PPV_ARGS(&d12_texture)));
+    // hresult(d11_texture.As(&texture_mutex));
+}
+
 void Decoder::init_decoder() {
+    std::println("Initialising rendering resources");
+
+    {
+        ComPtr<IDXGIFactory4> factory;
+        {
+            UINT factory_flags = 0;
+#ifdef _DEBUG
+            {
+                ComPtr<ID3D12Debug> debug_controller;
+                hresult(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_controller)));
+                debug_controller->EnableDebugLayer();
+                factory_flags |= DXGI_CREATE_FACTORY_DEBUG;
+            }
+#endif
+            hresult(CreateDXGIFactory2(factory_flags, IID_PPV_ARGS(&factory)));
+        }
+
+        ComPtr<IDXGIAdapter1> adapter;
+        for (UINT adapter_index = 0;; adapter_index++) {
+            HRESULT result = factory->EnumAdapters1(adapter_index, &adapter);
+            if (SUCCEEDED(result)) {
+                break;
+            } else if (result != DXGI_ERROR_INVALID_CALL) {
+                hresult(result);
+            }
+        }
+
+        UINT reset_token = 0;
+
+        D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_0;
+        hresult(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, &feature_level, 1, D3D11_SDK_VERSION, &d11_device, nullptr, nullptr));
+        hresult(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d12_device)));
+        hresult(MFCreateDXGIDeviceManager(&reset_token, &device_manager));
+        hresult(device_manager->ResetDevice(d11_device.Get(), reset_token));
+    }
+
     std::println("Setting decoder input type");
 
     for (DWORD i = 0;; i++) {
@@ -46,6 +100,18 @@ void Decoder::init_decoder() {
             hresult(decoder->SetInputType(0, input.Get(), 0));
             std::println("Input type set");
             break;
+        }
+    }
+
+    std::println("Checking that the decoder is D3D11-aware");
+
+    {
+        ComPtr<IMFAttributes> decoder_attributes;
+        hresult(decoder->GetAttributes(&decoder_attributes));
+        BOOL is_decoder_d3d11_aware = (BOOL)MFGetAttributeUINT32(decoder_attributes.Get(), MF_SA_D3D11_AWARE, (UINT32)-1);
+        assert(is_decoder_d3d11_aware != -1);
+        if (is_decoder_d3d11_aware == FALSE) {
+            throw std::runtime_error("Decoder is not D3D11-aware");
         }
     }
 
@@ -73,6 +139,8 @@ void Decoder::init_decoder() {
     hresult(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
 
     sample_duration = 10'000'000 /* Hundred-nanoseconds in a second. */ / video_framerate;
+
+    create_texture();
 }
 
 void Decoder::process_sample(ComPtr<IMFSample> sample) {
@@ -101,6 +169,8 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
             hresult(decoder->SetOutputType(0, output_type.Get(), 0));
 
             hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
+
+            create_texture();
 
             std::println("Stream change handled");
 
@@ -191,7 +261,7 @@ bool Decoder::is_parameter_sets(std::span<uint8_t> buffer) {
     return is_header_type;
 }
 
- ComPtr<IMFSample> Decoder::create_sample(size_t size, int64_t sample_time, int64_t sample_duration) {
+ComPtr<IMFSample> Decoder::create_sample(size_t size, int64_t sample_time, int64_t sample_duration) {
     ComPtr<IMFMediaBuffer> input_buffer;
     hresult(MFCreateMemoryBuffer((DWORD)size, &input_buffer));
 
@@ -205,7 +275,7 @@ bool Decoder::is_parameter_sets(std::span<uint8_t> buffer) {
     return sample;
 }
 
- void Decoder::copy_payload_to_first_buffer(ComPtr<IMFSample> sample, std::span<uint8_t> payload) {
+void Decoder::copy_payload_to_first_buffer(ComPtr<IMFSample> sample, std::span<uint8_t> payload) {
     ComPtr<IMFMediaBuffer> media_buffer;
     hresult(sample->GetBufferByIndex(0, &media_buffer));
     BYTE *buffer = nullptr;
@@ -218,12 +288,12 @@ bool Decoder::is_parameter_sets(std::span<uint8_t> buffer) {
     hresult(media_buffer->SetCurrentLength((DWORD)payload.size()));
 }
 
- int64_t Decoder::get_sample_time(int64_t start_timestamp, int64_t end_timestamp) {
+int64_t Decoder::get_sample_time(int64_t start_timestamp, int64_t end_timestamp) {
     int64_t sample_time = (end_timestamp - start_timestamp) / 100;
     return sample_time;
 }
 
- ComPtr<IMFTransform> Decoder::create_decoder() {
+ComPtr<IMFTransform> Decoder::create_decoder() {
     std::println("Creating decoder");
 
     MFT_REGISTER_TYPE_INFO input = {};

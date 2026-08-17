@@ -14,6 +14,9 @@ target_compile_options(test_wmf PRIVATE /utf-8 /W4 /std:c++latest)
 target_link_libraries(test_wmf PRIVATE
   dxva2 evr mf mfplat mfplay mfreadwrite mfuuid # Windows Media Foundation.
   ws2_32 # Windows Sockets 2.
+  dxgi # DXGI.
+  d3d12 # DirectX 12.
+  d3d11 # DirectX 11.
 )
 target_include_directories(test_wmf PRIVATE src)
 target_precompile_headers(test_wmf PRIVATE src/pch.hpp)
