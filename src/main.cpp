@@ -367,6 +367,7 @@ struct App {
                 HRESULT result = decoder->ProcessOutput(0, 1, &output_buffer, &status);
                 assert(result == MF_E_TRANSFORM_NEED_MORE_INPUT);
                 assert(status == 0);
+                assert(output_buffer.pEvents == nullptr);
 
                 if (output_buffer.pEvents != nullptr) {
                     output_buffer.pEvents->Release();
@@ -420,8 +421,11 @@ struct App {
                         ComPtr<IMFMediaType> output_type;
                         hresult(decoder->GetOutputAvailableType(0, 0, &output_type));
                         hresult(decoder->SetOutputType(0, output_type.Get(), 0));
+                        hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
 
                         std::println("Stream change handled");
+
+                        continue;
                     } else if (result != S_OK) {
                         hresult(result);
                     } else {
@@ -431,6 +435,7 @@ struct App {
 
                     assert(status == 0);
                     assert(output_buffer.dwStatus == 0);
+                    assert(output_buffer.pEvents == nullptr);
 
                     if (output_buffer.pEvents != nullptr) {
                         output_buffer.pEvents->Release();
