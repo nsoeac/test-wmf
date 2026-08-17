@@ -6,6 +6,9 @@ add_executable(test_wmf
   src/lib/encoding.cpp
   src/lib/win32.cpp
   src/lib/bitstream.cpp
+  src/decoder.cpp
+  src/config.cpp
+  src/networking.cpp
 )
 target_compile_options(test_wmf PRIVATE /utf-8 /W4 /std:c++latest)
 target_link_libraries(test_wmf PRIVATE
