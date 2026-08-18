@@ -38,7 +38,7 @@ void hresult(HRESULT result) {
             if (string == nullptr) {
                 return;
             }
-            
+
             size_t length = wcslen(string);
             bool valid = (length != -1) && (length > 0);
 
@@ -54,4 +54,14 @@ void hresult(HRESULT result) {
 
         abort();
     }
+}
+
+HANDLE get_module_handle() {
+    HANDLE handle = GetModuleHandleW(NULL);
+
+    if (handle == NULL) {
+        THROW_WIN32(GetModuleHandleW);
+    }
+
+    return handle;
 }

@@ -5,6 +5,8 @@ std::string get_win32_error();
 std::string get_wsa_error();
 void hresult(HRESULT result);
 
+HANDLE get_module_handle();
+
 #define THROW_WIN32(function)                                                                                                            \
     do {                                                                                                                                 \
         DWORD error_code = GetLastError();                                                                                               \
