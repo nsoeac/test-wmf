@@ -4,8 +4,6 @@
 
 struct Decoder {
 private:
-    static constexpr bool create_shared_texture = false;
-
     struct Frame_Header {
         int32_t frame_index;
         int32_t format_index;
@@ -15,6 +13,7 @@ private:
     Microsoft::WRL::ComPtr<IMFTransform> decoder = create_decoder();
     MFT_INPUT_STREAM_INFO input_stream_info = {};
     MFT_OUTPUT_STREAM_INFO output_stream_info = {};
+    MFT_OUTPUT_DATA_BUFFER data_buffer = {};
 
     int video_width = -1;
     int video_height = -1;
@@ -23,18 +22,11 @@ private:
     int64_t sample_duration = INT64_MIN;
     bool has_parameter_sets = false;
 
-    Microsoft::WRL::ComPtr<ID3D11DeviceContext> d11_context;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
     Microsoft::WRL::ComPtr<IMFMediaBuffer> media_buffer;
     Microsoft::WRL::ComPtr<IMFSample> output_sample;
-    MFT_OUTPUT_DATA_BUFFER data_buffer = {};
-    Microsoft::WRL::ComPtr<ID3D12Device> d12_device;
-    Microsoft::WRL::ComPtr<ID3D11Device> d11_device;
-    Microsoft::WRL::ComPtr<IDXGIResource1> shared_texture;
-    Microsoft::WRL::ComPtr<IDXGIKeyedMutex> texture_mutex;
-    HANDLE texture_handle = INVALID_HANDLE_VALUE;
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> d11_texture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> d12_texture;
-    Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> device_manager;
+    Microsoft::WRL::ComPtr<ID3D11Device> device;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
 
     Networking net;
 public:

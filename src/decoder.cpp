@@ -18,25 +18,7 @@ void Decoder::connect() {
 }
 
 void Decoder::create_texture() {
-    if (texture_handle != INVALID_HANDLE_VALUE) {
-        if (create_shared_texture) {
-            std::println("Destroying old texture");
-
-            d12_texture = nullptr;
-
-            if (CloseHandle(texture_handle) == 0) {
-                THROW_WIN32(CloseHandle);
-            }
-
-            texture_handle = INVALID_HANDLE_VALUE;
-
-            if (texture_mutex) {
-                hresult(texture_mutex->ReleaseSync(0));
-            }
-        }
-
-        d11_texture = nullptr;
-    }
+    texture = nullptr;
 
     D3D11_TEXTURE2D_DESC desc = {};
     desc.Width = video_width;
@@ -48,31 +30,13 @@ void Decoder::create_texture() {
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
 
-    if (create_shared_texture) {
-        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-    }
-
-    hresult(d11_device->CreateTexture2D(&desc, nullptr, &d11_texture));
-
-    if (create_shared_texture) {
-        hresult(d11_texture.As(&shared_texture));
-        hresult(shared_texture->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &texture_handle));
-        hresult(d12_device->OpenSharedHandle(texture_handle, IID_PPV_ARGS(&d12_texture)));
-        hresult(d11_texture.As(&texture_mutex));
-    }
-
+    hresult(device->CreateTexture2D(&desc, nullptr, &texture));
     hresult(MFCreateSample(&output_sample));
-    hresult(MFCreateDXGISurfaceBuffer(IID_ID3D11Texture2D, d11_texture.Get(), 0, FALSE, &media_buffer));
+    hresult(MFCreateDXGISurfaceBuffer(IID_ID3D11Texture2D, texture.Get(), 0, FALSE, &media_buffer));
 
     data_buffer.dwStreamID = 0;
     data_buffer.pSample = output_sample.Get();
     hresult(output_sample->AddBuffer(media_buffer.Get()));
-
-    if (create_shared_texture) {
-        std::println("Acquiring texture mutex");
-
-        hresult(texture_mutex->AcquireSync(0, INFINITE));
-    }
 }
 
 void Decoder::init_decoder() {
@@ -103,13 +67,8 @@ void Decoder::init_decoder() {
             }
         }
 
-        UINT reset_token = 0;
-
         D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_0;
-        hresult(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, &feature_level, 1, D3D11_SDK_VERSION, &d11_device, nullptr, &d11_context));
-        hresult(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d12_device)));
-        hresult(MFCreateDXGIDeviceManager(&reset_token, &device_manager));
-        hresult(device_manager->ResetDevice(d11_device.Get(), reset_token));
+        hresult(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, &feature_level, 1, D3D11_SDK_VERSION, &device, nullptr, &context));
     }
 
     std::println("Setting decoder input type");
