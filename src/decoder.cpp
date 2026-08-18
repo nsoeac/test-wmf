@@ -206,19 +206,6 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
         }
         case S_OK: {
             std::println("Sample processed");
-
-            ComPtr<IMFDXGIBuffer> dxgi_buffer;
-            hresult(media_buffer.As(&dxgi_buffer));
-
-            std::println("Got DXGI buffer");
-
-            ComPtr<ID3D11Texture2D> sample_texture;
-            hresult(dxgi_buffer->GetResource(IID_PPV_ARGS(&sample_texture)));
-
-            d11_context->CopyResource(d11_texture.Get(), sample_texture.Get());
-
-            std::println("Texture copied");
-
             break;
         }
         default:
