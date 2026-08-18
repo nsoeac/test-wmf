@@ -2,33 +2,18 @@
 
 #include "lib/lib.hpp"
 
-static constexpr std::string_view config_path = ".\\config.txt";
+static constexpr std::string_view config_subpath = ".\\config.txt";
 static constexpr int expected_config_line_count = 2;
 constexpr bool print_debug_strings = false;
 
-Config read_config() {
+Config read_config(std::string_view output_path) {
     if (print_debug_strings) {
         std::println("Reading config");
     }
 
-    std::ifstream input_stream(config_path.data(), std::ios::in | std::ios::binary | std::ios::ate);
+    std::filesystem::path config_path = std::filesystem::path(output_path) / std::filesystem::path(config_subpath);
 
-    if (!input_stream) {
-        throw std::runtime_error("Failed to open config file");
-    }
-
-    auto size = input_stream.tellg();
-    if (size == -1) {
-        throw std::runtime_error("Failed to read size of config file");
-    }
-
-    input_stream.seekg(0);
-
-    std::vector<char> buffer(size);
-    input_stream.read(buffer.data(), size);
-
-    input_stream.close();
-
+    std::vector<char> buffer = read_file(config_path.string());
     std::vector<std::span<char>> lines = read_lines(buffer);
 
     if (lines.size() != expected_config_line_count) {

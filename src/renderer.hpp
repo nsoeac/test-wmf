@@ -18,6 +18,8 @@ struct Renderer {
     Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
     Microsoft::WRL::ComPtr<IDXGISwapChain> swap_chain;
     Microsoft::WRL::ComPtr<ID3D11Buffer> vertex_buffer;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> pixel_shader;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader> vertex_shader;
     Renderer(Config &config);
     static LRESULT window_procedure(HWND, UINT, WPARAM, LPARAM);
     LRESULT handle_message(UINT, WPARAM, LPARAM);

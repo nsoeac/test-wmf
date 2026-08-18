@@ -132,6 +132,13 @@ Renderer::Renderer(Config &config) :
 
             hresult(device->CreateBuffer(&desc, &initial_data, &vertex_buffer));
         }
+
+        compile_shader("texture.hlsl", "VSMain", "vs_5_0", "texture_vs.cso");
+        compile_shader("texture.hlsl", "PSMain", "ps_5_0", "texture_ps.cso");
+        std::vector<char> vs = read_file("texture_vs.cso");
+        std::vector<char> ps = read_file("texture_ps.cso");
+        hresult(device->CreateVertexShader(vs.data(), vs.size(), nullptr, &vertex_shader));
+        hresult(device->CreatePixelShader(ps.data(), ps.size(), nullptr, &pixel_shader));
     }
 
     {

@@ -49,3 +49,14 @@ std::vector<std::span<char>> read_lines(std::vector<char> &buffer) {
 
     return lines;
 }
+
+std::vector<char> read_file(std::string_view filepath) {
+    std::ifstream stream(filepath.data(), std::ios::in | std::ios::binary | std::ios::ate);
+    auto size = stream.tellg();
+    assert(size != -1);
+    stream.seekg(0);
+    std::vector<char> buffer((size_t)size);
+    stream.read(buffer.data(), size);
+    stream.close();
+    return buffer;
+}

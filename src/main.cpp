@@ -4,7 +4,9 @@
 
 constexpr bool print_debug_strings = false;
 
-int main() {
+int main(int argc, char *argv[]) {
+    assert(argc == 2);
+
     {
         if (print_debug_strings) {
             std::println("Initialising COM");
@@ -24,7 +26,7 @@ int main() {
         }
     }
 
-    Config config = read_config();
+    Config config = read_config(argv[1]);
 
     Renderer renderer(config);
 }

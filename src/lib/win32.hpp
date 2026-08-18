@@ -4,6 +4,9 @@ std::string get_win32_error_from_code(DWORD error_code);
 std::string get_win32_error();
 std::string get_wsa_error();
 void hresult(HRESULT result);
+void compile_shader(std::string_view source_path, std::string_view entrypoint, std::string_view target, std::string_view output_path);
+std::string get_working_directory();
+Microsoft::WRL::ComPtr<ID3DBlob> load_shader(std::string_view filepath);
 
 HANDLE get_module_handle();
 

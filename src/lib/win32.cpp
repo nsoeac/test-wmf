@@ -65,3 +65,49 @@ HANDLE get_module_handle() {
 
     return handle;
 }
+
+std::string get_working_directory() {
+    DWORD length = GetCurrentDirectoryW(0, NULL);
+    if (length == 0) {
+        std::println("GetCurrentDirectoryW failed: {}", get_win32_error());
+        abort();
+    }
+
+    std::wstring cwd(length, L'\0');
+    DWORD characters_returned = GetCurrentDirectoryW(length, cwd.data());
+    assert(length == (characters_returned + 1));
+
+    return convert(cwd);
+}
+
+void compile_shader(std::string_view source_path, std::string_view entrypoint, std::string_view target, std::string_view output_path) {
+    if (!std::filesystem::exists(source_path)) {
+        std::println("Source path {} does not exist (cwd is {})", source_path, get_working_directory());
+        abort();
+    }
+
+    if (std::filesystem::exists(output_path)) {
+        std::filesystem::file_time_type last_update = std::filesystem::last_write_time(source_path);
+        std::filesystem::file_time_type last_compile = std::filesystem::last_write_time(output_path);
+        if (last_update <= last_compile) {
+            return;
+        }
+    }
+
+    std::string command = std::format("dxc {} -T {} -E {} -Zi -Qembed_debug -Od -Fo {}", source_path, target, entrypoint, output_path);
+    if (system(command.data()) != 0) {
+        std::println("Command failed: {}", command);
+        abort();
+    } else {
+        std::println("{} compiled", output_path);
+    }
+}
+
+Microsoft::WRL::ComPtr<ID3DBlob> load_shader(std::string_view filepath) {
+    Microsoft::WRL::ComPtr<ID3DBlob> shader;
+    std::vector<char> shader_code = read_file(filepath.data());
+    hresult(D3DCreateBlob(shader_code.size(), &shader));
+    std::span<char> data_buffer((char *)shader->GetBufferPointer(), shader->GetBufferSize());
+    std::ranges::copy(shader_code, data_buffer.begin());
+    return shader;
+}
