@@ -24,15 +24,17 @@ void Decoder::create_texture() {
 
             d12_texture = nullptr;
 
+            std::println("Closing texture handle");
+
             if (CloseHandle(texture_handle) == 0) {
                 THROW_WIN32(CloseHandle);
             }
 
             texture_handle = INVALID_HANDLE_VALUE;
 
-            if (texture_mutex) {
-                hresult(texture_mutex->ReleaseSync(0));
-            }
+            std::println("Destroying texture mutex");
+
+            texture_mutex = nullptr;
         }
 
         d11_texture = nullptr;
@@ -67,12 +69,6 @@ void Decoder::create_texture() {
     data_buffer.dwStreamID = 0;
     data_buffer.pSample = output_sample.Get();
     hresult(output_sample->AddBuffer(media_buffer.Get()));
-
-    if (create_shared_texture) {
-        std::println("Acquiring texture mutex");
-
-        hresult(texture_mutex->AcquireSync(0, INFINITE));
-    }
 }
 
 void Decoder::init_decoder() {
@@ -171,6 +167,12 @@ void Decoder::init_decoder() {
 }
 
 void Decoder::process_sample(ComPtr<IMFSample> sample) {
+    if (create_shared_texture) {
+        std::println("Acquiring texture mutex");
+
+        hresult(texture_mutex->AcquireSync(0, INFINITE));
+    }
+
     hresult(decoder->ProcessInput(0, sample.Get(), 0));
 
     while (true) {
@@ -229,6 +231,11 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
     }
 
 FINISHED:;
+    if (create_shared_texture) {
+        std::println("Releasing texture mutex");
+
+        hresult(texture_mutex->ReleaseSync(0));
+    }
 }
 
 void Decoder::process_frame(std::vector<uint8_t> &frame) {

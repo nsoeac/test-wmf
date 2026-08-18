@@ -4,7 +4,7 @@
 
 struct Decoder {
 private:
-    static constexpr bool create_shared_texture = false;
+    static constexpr bool create_shared_texture = true;
 
     struct Frame_Header {
         int32_t frame_index;
