@@ -20,7 +20,16 @@ void Decoder::connect() {
 void Decoder::create_texture() {
     if (texture_handle != INVALID_HANDLE_VALUE) {
         if (create_shared_texture) {
-            std::println("Destroying old texture");
+            std::println("Destroying media buffer");
+
+            media_buffer = nullptr;
+
+            std::println("Destroying sample");
+
+            output_sample = nullptr;
+            data_buffer.pSample = nullptr;
+
+            std::println("Destroying DX12 texture");
 
             d12_texture = nullptr;
 
@@ -32,13 +41,19 @@ void Decoder::create_texture() {
 
             texture_handle = INVALID_HANDLE_VALUE;
 
+            std::println("Destroying DXGI resource");
+
+            shared_texture = nullptr;
+
             std::println("Destroying texture mutex");
 
             texture_mutex = nullptr;
         }
-
-        d11_texture = nullptr;
     }
+
+    std::println("Destroying DX11 texture");
+
+    d11_texture = nullptr;
 
     D3D11_TEXTURE2D_DESC desc = {};
     desc.Width = video_width;
@@ -59,7 +74,7 @@ void Decoder::create_texture() {
     if (create_shared_texture) {
         hresult(d11_texture.As(&shared_texture));
         hresult(shared_texture->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &texture_handle));
-        hresult(d12_device->OpenSharedHandle(texture_handle, IID_PPV_ARGS(&d12_texture)));
+        hresult(d12_device->OpenSharedHandle(texture_handle, __uuidof(ID3D12Resource), &d12_texture));
         hresult(d11_texture.As(&texture_mutex));
     }
 
@@ -120,6 +135,7 @@ void Decoder::init_decoder() {
         hresult(input->GetGUID(MF_MT_SUBTYPE, &subtype));
         if ((major_type == MFMediaType_Video) && (subtype == MFVideoFormat_HEVC)) {
             hresult(MFSetAttributeSize(input.Get(), MF_MT_FRAME_SIZE, video_width, video_height));
+            hresult(input->SetUINT32(CODECAPI_AVLowLatencyMode, (UINT32)VARIANT_TRUE));
             hresult(decoder->SetInputType(0, input.Get(), 0));
             std::println("Input type set");
             break;
@@ -192,13 +208,33 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
             assert(data_buffer.dwStatus & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE);
             data_buffer.dwStatus &= ~MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE;
 
+            assert(status == 0);
+            assert(data_buffer.dwStatus == 0);
+            assert(data_buffer.pEvents == nullptr);
+
+            hresult(decoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0));
+
             ComPtr<IMFMediaType> output_type;
             hresult(decoder->GetOutputAvailableType(0, 0, &output_type));
             hresult(decoder->SetOutputType(0, output_type.Get(), 0));
 
             hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
 
+            hresult(MFGetAttributeSize(output_type.Get(), MF_MT_FRAME_SIZE, (UINT32 *)&video_width, (UINT32 *)&video_height));
+
+            if (create_shared_texture) {
+                std::println("Releasing texture mutex");
+
+                hresult(texture_mutex->ReleaseSync(0));
+            }
+
             create_texture();
+
+            if (create_shared_texture) {
+                std::println("Acquiring texture mutex");
+
+                hresult(texture_mutex->AcquireSync(0, INFINITE));
+            }
 
             std::println("Stream change handled");
 
@@ -209,6 +245,9 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
             break;
         }
         default:
+            assert(status == 0);
+            assert(data_buffer.dwStatus == 0);
+            assert(data_buffer.pEvents == nullptr);
             hresult(result);
         }
 
