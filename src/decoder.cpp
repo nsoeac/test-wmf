@@ -1,10 +1,12 @@
 #include "decoder.hpp"
 
+#include "renderer.hpp"
+
 #include "lib/lib.hpp"
 
 using Microsoft::WRL::ComPtr;
 
-Decoder::Decoder(Config &config) : net(config) {}
+Decoder::Decoder(Config &config, Renderer *renderer) : net(config), renderer(renderer) {}
 
 void Decoder::connect() {
     std::vector<uint8_t> initial_message = net.get_initial_message();
@@ -18,7 +20,7 @@ void Decoder::connect() {
 }
 
 void Decoder::create_texture() {
-    texture = nullptr;
+    renderer->texture = nullptr;
 
     D3D11_TEXTURE2D_DESC desc = {};
     desc.Width = video_width;
@@ -30,9 +32,9 @@ void Decoder::create_texture() {
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
 
-    hresult(device->CreateTexture2D(&desc, nullptr, &texture));
+    hresult(renderer->device->CreateTexture2D(&desc, nullptr, &renderer->texture));
     hresult(MFCreateSample(&output_sample));
-    hresult(MFCreateDXGISurfaceBuffer(IID_ID3D11Texture2D, texture.Get(), 0, FALSE, &media_buffer));
+    hresult(MFCreateDXGISurfaceBuffer(IID_ID3D11Texture2D, renderer->texture.Get(), 0, FALSE, &media_buffer));
 
     data_buffer.dwStreamID = 0;
     data_buffer.pSample = output_sample.Get();
@@ -40,37 +42,6 @@ void Decoder::create_texture() {
 }
 
 void Decoder::init_decoder() {
-    std::println("Initialising rendering resources");
-
-    {
-        ComPtr<IDXGIFactory4> factory;
-        {
-            UINT factory_flags = 0;
-#ifdef _DEBUG
-            {
-                ComPtr<ID3D12Debug> debug_controller;
-                hresult(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_controller)));
-                debug_controller->EnableDebugLayer();
-                factory_flags |= DXGI_CREATE_FACTORY_DEBUG;
-            }
-#endif
-            hresult(CreateDXGIFactory2(factory_flags, IID_PPV_ARGS(&factory)));
-        }
-
-        ComPtr<IDXGIAdapter1> adapter;
-        for (UINT adapter_index = 0;; adapter_index++) {
-            HRESULT result = factory->EnumAdapters1(adapter_index, &adapter);
-            if (SUCCEEDED(result)) {
-                break;
-            } else if (result != DXGI_ERROR_INVALID_CALL) {
-                hresult(result);
-            }
-        }
-
-        D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_0;
-        hresult(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, &feature_level, 1, D3D11_SDK_VERSION, &device, nullptr, &context));
-    }
-
     std::println("Setting decoder input type");
 
     for (DWORD i = 0;; i++) {
@@ -220,10 +191,14 @@ void Decoder::process_frame(std::vector<uint8_t> &frame) {
     sample = nullptr;
 }
 
+void Decoder::handle_packet() {
+    std::vector<uint8_t> frame = net.receive();
+    process_frame(frame);
+}
+
 void Decoder::handle_packets() {
     while (true) {
-        std::vector<uint8_t> frame = net.receive();
-        process_frame(frame);
+        handle_packet();
     }
 }
 

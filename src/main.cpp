@@ -26,8 +26,5 @@ int main() {
 
     Config config = read_config();
 
-    Decoder decoder(config);
-    decoder.connect();
-    decoder.init_decoder();
-    decoder.handle_packets();
+    Renderer renderer(config);
 }

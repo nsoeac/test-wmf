@@ -4,6 +4,8 @@
 
 struct Decoder {
 private:
+    struct Renderer *renderer = nullptr;
+
     struct Frame_Header {
         int32_t frame_index;
         int32_t format_index;
@@ -22,18 +24,16 @@ private:
     int64_t sample_duration = INT64_MIN;
     bool has_parameter_sets = false;
 
-    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
     Microsoft::WRL::ComPtr<IMFMediaBuffer> media_buffer;
     Microsoft::WRL::ComPtr<IMFSample> output_sample;
-    Microsoft::WRL::ComPtr<ID3D11Device> device;
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
 
     Networking net;
 public:
-    Decoder(Config &config);
+    Decoder(Config &config, struct Renderer *renderer);
     void connect();
     void init_decoder();
     void handle_packets();
+    void handle_packet();
 private:
     void create_texture();
     void process_sample(Microsoft::WRL::ComPtr<IMFSample> sample);
