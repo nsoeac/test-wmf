@@ -19,18 +19,20 @@ void Decoder::connect() {
 
 void Decoder::create_texture() {
     if (texture_handle != INVALID_HANDLE_VALUE) {
-        std::println("Destroying old texture");
+        if (create_shared_texture) {
+            std::println("Destroying old texture");
 
-        d12_texture = nullptr;
+            d12_texture = nullptr;
 
-        if (CloseHandle(texture_handle) == 0) {
-            THROW_WIN32(CloseHandle);
-        }
+            if (CloseHandle(texture_handle) == 0) {
+                THROW_WIN32(CloseHandle);
+            }
 
-        texture_handle = INVALID_HANDLE_VALUE;
+            texture_handle = INVALID_HANDLE_VALUE;
 
-        if (texture_mutex) {
-            hresult(texture_mutex->ReleaseSync(0));
+            if (texture_mutex) {
+                hresult(texture_mutex->ReleaseSync(0));
+            }
         }
 
         d11_texture = nullptr;
@@ -45,12 +47,19 @@ void Decoder::create_texture() {
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+
+    if (create_shared_texture) {
+        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    }
+
     hresult(d11_device->CreateTexture2D(&desc, nullptr, &d11_texture));
-    hresult(d11_texture.As(&texture));
-    hresult(texture->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &texture_handle));
-    hresult(d12_device->OpenSharedHandle(texture_handle, IID_PPV_ARGS(&d12_texture)));
-    hresult(d11_texture.As(&texture_mutex));
+
+    if (create_shared_texture) {
+        hresult(d11_texture.As(&shared_texture));
+        hresult(shared_texture->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &texture_handle));
+        hresult(d12_device->OpenSharedHandle(texture_handle, IID_PPV_ARGS(&d12_texture)));
+        hresult(d11_texture.As(&texture_mutex));
+    }
 
     hresult(MFCreateSample(&output_sample));
     hresult(MFCreateDXGISurfaceBuffer(IID_ID3D11Texture2D, d11_texture.Get(), 0, FALSE, &media_buffer));
@@ -59,9 +68,11 @@ void Decoder::create_texture() {
     data_buffer.pSample = output_sample.Get();
     hresult(output_sample->AddBuffer(media_buffer.Get()));
 
-    std::println("Acquiring texture mutex");
+    if (create_shared_texture) {
+        std::println("Acquiring texture mutex");
 
-    hresult(texture_mutex->AcquireSync(0, INFINITE));
+        hresult(texture_mutex->AcquireSync(0, INFINITE));
+    }
 }
 
 void Decoder::init_decoder() {

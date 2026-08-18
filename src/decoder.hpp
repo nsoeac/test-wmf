@@ -4,6 +4,8 @@
 
 struct Decoder {
 private:
+    static constexpr bool create_shared_texture = false;
+
     struct Frame_Header {
         int32_t frame_index;
         int32_t format_index;
@@ -27,7 +29,7 @@ private:
     MFT_OUTPUT_DATA_BUFFER data_buffer = {};
     Microsoft::WRL::ComPtr<ID3D12Device> d12_device;
     Microsoft::WRL::ComPtr<ID3D11Device> d11_device;
-    Microsoft::WRL::ComPtr<IDXGIResource1> texture;
+    Microsoft::WRL::ComPtr<IDXGIResource1> shared_texture;
     Microsoft::WRL::ComPtr<IDXGIKeyedMutex> texture_mutex;
     HANDLE texture_handle = INVALID_HANDLE_VALUE;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> d11_texture;
