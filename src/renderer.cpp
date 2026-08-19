@@ -100,6 +100,10 @@ void Renderer::init_renderer() {
         hresult(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, command_allocator.Get(), nullptr, IID_PPV_ARGS(&graphics_command_list)));
         hresult(graphics_command_list->Close());
 
+        auto feature_level = D3D_FEATURE_LEVEL_11_0;
+        IUnknown *command_queues[] = { command_queue.Get() };
+        hresult(D3D11On12CreateDevice(device.Get(), 0, &feature_level, 1, command_queues, 1, 0, &device_11, &device_context_11, nullptr));
+
         std::println("Initialising swap chain");
 
         DXGI_SWAP_CHAIN_DESC1 swap_chain_desc = {};
