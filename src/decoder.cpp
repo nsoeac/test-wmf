@@ -110,6 +110,9 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
         }
         case S_OK: {
             std::println("Sample processed");
+
+            renderer->render_frame();
+
             break;
         }
         default:

@@ -12,6 +12,10 @@ struct Renderer {
     static LRESULT window_procedure(HWND, UINT, WPARAM, LPARAM);
     LRESULT handle_message(UINT, WPARAM, LPARAM);
 
+    static constexpr uint32_t frame_count = 2;
+    static constexpr uint32_t width = 1280;
+    static constexpr uint32_t height = 720;
+
     Microsoft::WRL::ComPtr<ID3D12Device> device;
     Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtv_heap;
@@ -23,7 +27,8 @@ struct Renderer {
     Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
     Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> texture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> texture_buffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> upload_buffer;
+    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, frame_count> backbuffers;
     Microsoft::WRL::ComPtr<IMFMediaBuffer> media_buffer;
     Microsoft::WRL::ComPtr<IMFSample> sample;
     D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view = {};
@@ -37,13 +42,12 @@ struct Renderer {
     uint32_t frame_index = 0;
     uint32_t rtv_descriptor_size = 0;
     uint32_t cbv_srv_uav_descriptor_size = 0;
-    static constexpr uint32_t sample_count = 4;
-    static constexpr uint32_t frame_count = 2;
-    static constexpr uint32_t width = 1280;
-    static constexpr uint32_t height = 720;
+
     static constexpr std::string_view class_name = "Window";
     static constexpr std::string_view window_name = "Renderer";
     Renderer(Config &config);
+    void wait_for_previous_frame();
+    void render_frame();
     void init_renderer();
     void create_texture();
     Decoder decoder;
