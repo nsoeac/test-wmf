@@ -87,6 +87,19 @@ void Renderer::init_renderer() {
         rtv_descriptor_size = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         cbv_srv_uav_descriptor_size = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
+        std::println("Initialising command queue");
+
+        {
+            D3D12_COMMAND_QUEUE_DESC queue_desc = {};
+            queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+            hresult(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&command_queue)));
+        }
+
+        hresult(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&command_allocator)));
+
+        hresult(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, command_allocator.Get(), nullptr, IID_PPV_ARGS(&graphics_command_list)));
+        hresult(graphics_command_list->Close());
+
         std::println("Initialising swap chain");
 
         DXGI_SWAP_CHAIN_DESC1 swap_chain_desc = {};
@@ -122,19 +135,6 @@ void Renderer::init_renderer() {
         device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&rtv_heap));
     }
 
-    std::println("Initialising command queue");
-
-    {
-        D3D12_COMMAND_QUEUE_DESC queue_desc = {};
-        queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        hresult(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&command_queue)));
-    }
-
-    hresult(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&command_allocator)));
-
-    hresult(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, command_allocator.Get(), nullptr, IID_PPV_ARGS(&graphics_command_list)));
-    hresult(graphics_command_list->Close());
-
     {
         hresult(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
         fence_value = 1;
@@ -163,8 +163,14 @@ void Renderer::init_renderer() {
                 .RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL,
             } },
         };
+
+        CD3DX12_ROOT_PARAMETER1 root_parameters[3] = {};
+        root_parameters[0].InitAsUnorderedAccessView(0);
+        root_parameters[1].InitAsUnorderedAccessView(1);
+        root_parameters[2].InitAsConstants(2, 0);
+
         CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-        root_signature_desc.Init_1_1(0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+        root_signature_desc.Init_1_1(_countof(root_parameters), root_parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
         std::vector<D3D12_INPUT_ELEMENT_DESC> input_elements = {
             { "SV_POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -196,6 +202,20 @@ void Renderer::init_renderer() {
     }
 }
 
+void Renderer::create_texture() {
+    texture = nullptr;
+    D3D12_RESOURCE_DESC texture_desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_NV12, decoder.video_width, decoder.video_height);
+    D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_SHARED, &texture_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture)));
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC luminance_subresource = CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2D(DXGI_FORMAT_R8_UINT, 0, 0);
+    D3D12_CPU_DESCRIPTOR_HANDLE luminance_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart(), 0, cbv_srv_uav_descriptor_size);
+    device->CreateUnorderedAccessView(texture.Get(), nullptr, &luminance_subresource, luminance_handle);
+    D3D12_UNORDERED_ACCESS_VIEW_DESC chrominance_subresource = CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2D(DXGI_FORMAT_R8_UINT, 0, 1);
+    D3D12_CPU_DESCRIPTOR_HANDLE chrominance_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart(), 1, cbv_srv_uav_descriptor_size);
+    device->CreateUnorderedAccessView(texture.Get(), nullptr, &chrominance_subresource, chrominance_handle);
+}
+
 Renderer::Renderer(Config &config) :
     decoder(config, this) {
     {
@@ -221,6 +241,8 @@ Renderer::Renderer(Config &config) :
 
         ShowWindow(handle, SW_NORMAL);
     }
+
+    init_renderer();
 
     {
         decoder.connect();

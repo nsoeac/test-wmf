@@ -3,7 +3,6 @@
 #include "networking.hpp"
 
 struct Decoder {
-private:
     struct Renderer *renderer = nullptr;
 
     struct Frame_Header {
@@ -28,13 +27,11 @@ private:
     Microsoft::WRL::ComPtr<IMFSample> output_sample;
 
     Networking net;
-public:
     Decoder(Config &config, struct Renderer *renderer);
     void connect();
     void init_decoder();
     void handle_packets();
     void handle_packet();
-private:
     void create_texture();
     void process_sample(Microsoft::WRL::ComPtr<IMFSample> sample);
     void process_frame(std::vector<uint8_t> &frame);

@@ -22,6 +22,7 @@ struct Renderer {
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline_state;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
     Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer_resource;
+    Microsoft::WRL::ComPtr<ID3D12Resource> texture;
     D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view = {};
     HANDLE fence_event = NULL;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence;
@@ -41,5 +42,6 @@ struct Renderer {
     static constexpr std::string_view window_name = "Renderer";
     Renderer(Config &config);
     void init_renderer();
+    void create_texture();
     Decoder decoder;
 };

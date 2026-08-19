@@ -20,27 +20,7 @@ void Decoder::connect() {
 }
 
 void Decoder::create_texture() {
-    // renderer->texture = nullptr;
-
-    // D3D11_TEXTURE2D_DESC desc = {};
-    // desc.Width = video_width;
-    // desc.Height = video_height;
-    // desc.MipLevels = 1;
-    // desc.ArraySize = 1;
-    // desc.Format = DXGI_FORMAT_NV12;
-    // desc.SampleDesc.Count = 1;
-    // desc.Usage = D3D11_USAGE_DEFAULT;
-    // desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-
-    // hresult(renderer->device->CreateTexture2D(&desc, nullptr, &renderer->texture));
-    // hresult(MFCreateSample(&output_sample));
-    // hresult(MFCreateDXGISurfaceBuffer(IID_ID3D11Texture2D, renderer->texture.Get(), 0, FALSE, &media_buffer));
-
-    // data_buffer.dwStreamID = 0;
-    // data_buffer.pSample = output_sample.Get();
-    // hresult(output_sample->AddBuffer(media_buffer.Get()));
-
-    abort();
+    renderer->create_texture();
 }
 
 void Decoder::init_decoder() {
