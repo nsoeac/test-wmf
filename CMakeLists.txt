@@ -18,4 +18,5 @@ target_link_libraries(test_wmf PRIVATE
   d3d12 dxguid d3dcompiler dxgi d3d11 # DirectX.
 )
 target_include_directories(test_wmf PRIVATE src)
+target_include_directories(test_wmf SYSTEM BEFORE PRIVATE include)
 target_precompile_headers(test_wmf PRIVATE src/pch.hpp)
