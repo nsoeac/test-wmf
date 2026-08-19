@@ -16,8 +16,8 @@ struct Decoder {
     MFT_OUTPUT_STREAM_INFO output_stream_info = {};
     MFT_OUTPUT_DATA_BUFFER data_buffer = {};
 
-    int video_width = -1;
-    int video_height = -1;
+    uint32_t video_width = (uint32_t)-1;
+    uint32_t video_height = (uint32_t)-1;
     int video_framerate = -1;
     int64_t start_timestamp = INT64_MIN;
     int64_t sample_duration = INT64_MIN;

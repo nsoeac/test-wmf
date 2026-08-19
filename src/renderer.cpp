@@ -100,11 +100,6 @@ void Renderer::init_renderer() {
         hresult(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, command_allocator.Get(), nullptr, IID_PPV_ARGS(&graphics_command_list)));
         hresult(graphics_command_list->Close());
 
-        auto feature_level = D3D_FEATURE_LEVEL_11_0;
-        IUnknown *command_queues[] = { command_queue.Get() };
-        hresult(D3D11On12CreateDevice(device.Get(), 0, &feature_level, 1, command_queues, 1, 0, &device_11, &device_context_11, nullptr));
-        hresult(device_11.As(&device_11_on_12));
-
         std::println("Initialising swap chain");
 
         DXGI_SWAP_CHAIN_DESC1 swap_chain_desc = {};
@@ -241,11 +236,19 @@ void Renderer::init_renderer() {
 }
 
 void Renderer::create_texture() {
+    if (sample != nullptr) {
+        hresult(sample->RemoveBufferByIndex(0));
+    }
+
+    media_buffer = nullptr;
+
+    texture_buffer = nullptr;
     texture = nullptr;
+
     D3D12_RESOURCE_DESC texture_desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_NV12, decoder.video_width, decoder.video_height, 1, 1);
     texture_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
-    D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_GPU_UPLOAD);
-    hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &texture_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture)));
+    D3D12_HEAP_PROPERTIES gpu_upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_GPU_UPLOAD);
+    hresult(device->CreateCommittedResource(&gpu_upload_heap, D3D12_HEAP_FLAG_NONE, &texture_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture)));
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC luminance_subresource = {};
     luminance_subresource.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
@@ -262,8 +265,18 @@ void Renderer::create_texture() {
     D3D12_CPU_DESCRIPTOR_HANDLE chrominance_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart(), 1, cbv_srv_uav_descriptor_size);
     device->CreateUnorderedAccessView(texture.Get(), nullptr, &chrominance_subresource, chrominance_handle);
 
-    D3D11_RESOURCE_FLAGS flags = {};
-    hresult(device_11_on_12->CreateWrappedResource(texture.Get(), &flags, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, __uuidof(ID3D11Texture2D), &texture_11));
+    D3D12_RESOURCE_DESC texture_buffer_desc = CD3DX12_RESOURCE_DESC::Buffer(decoder.output_stream_info.cbSize);
+    D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &texture_buffer_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture_buffer)));
+
+    hresult(MFCreateMemoryBuffer(decoder.output_stream_info.cbSize, &media_buffer));
+
+    if (!sample) {
+        hresult(MFCreateSample(&sample));
+        decoder.data_buffer.pSample = sample.Get();
+    }
+
+    hresult(sample->AddBuffer(media_buffer.Get()));
 }
 
 Renderer::Renderer(Config &config) :

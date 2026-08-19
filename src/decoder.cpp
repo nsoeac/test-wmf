@@ -42,18 +42,6 @@ void Decoder::init_decoder() {
         }
     }
 
-    std::println("Checking that the decoder is D3D11-aware");
-
-    {
-        ComPtr<IMFAttributes> decoder_attributes;
-        hresult(decoder->GetAttributes(&decoder_attributes));
-        BOOL is_decoder_d3d11_aware = (BOOL)MFGetAttributeUINT32(decoder_attributes.Get(), MF_SA_D3D11_AWARE, (UINT32)-1);
-        assert(is_decoder_d3d11_aware != -1);
-        if (is_decoder_d3d11_aware == FALSE) {
-            throw std::runtime_error("Decoder is not D3D11-aware");
-        }
-    }
-
     std::println("Setting decoder output type");
 
     for (DWORD i = 0;; i++) {
@@ -102,11 +90,17 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
             assert(data_buffer.dwStatus & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE);
             data_buffer.dwStatus &= ~MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE;
 
+            assert(status == 0);
+            assert(data_buffer.dwStatus == 0);
+            assert(data_buffer.pEvents == nullptr);
+
             ComPtr<IMFMediaType> output_type;
             hresult(decoder->GetOutputAvailableType(0, 0, &output_type));
             hresult(decoder->SetOutputType(0, output_type.Get(), 0));
 
             hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
+
+            hresult(MFGetAttributeSize(output_type.Get(), MF_MT_FRAME_SIZE, &video_width, &video_height));
 
             create_texture();
 
