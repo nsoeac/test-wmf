@@ -21,7 +21,7 @@ struct Renderer {
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> graphics_command_list;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline_state;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
-    Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer_resource;
+    Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> texture;
     D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view = {};
     HANDLE fence_event = NULL;

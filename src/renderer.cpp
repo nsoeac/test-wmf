@@ -200,18 +200,61 @@ void Renderer::init_renderer() {
         pso_desc.SampleDesc.Count = sample_count;
         hresult(device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&pipeline_state)));
     }
+
+    // Upload vertices.
+
+    {
+        std::array<Vertex, 6> vertices = { {
+            { -1.0f, -1.0f },
+            { -1.0f, 1.0f },
+            { 1.0f, 1.0f },
+            { -1.0f, -1.0f },
+            { 1.0f, 1.0f },
+            { 1.0f, -1.0f },
+        } };
+
+        size_t buffer_size = sizeof(Vertex) * vertices.size();
+
+        {
+            D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(buffer_size);
+            D3D12_HEAP_PROPERTIES heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+            hresult(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vertex_buffer)));
+        }
+
+        {
+            UINT8 *buffer = nullptr;
+            CD3DX12_RANGE read_range(0, 0);
+            hresult(vertex_buffer->Map(0, &read_range, reinterpret_cast<void **>(&buffer)));
+            memcpy(buffer, vertices.data(), buffer_size);
+            vertex_buffer->Unmap(0, nullptr);
+        }
+
+        vertex_buffer_view.BufferLocation = vertex_buffer->GetGPUVirtualAddress();
+        vertex_buffer_view.StrideInBytes = sizeof(Vertex);
+        vertex_buffer_view.SizeInBytes = (uint32_t)buffer_size;
+    }
 }
 
 void Renderer::create_texture() {
     texture = nullptr;
-    D3D12_RESOURCE_DESC texture_desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_NV12, decoder.video_width, decoder.video_height);
-    D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-    hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_SHARED, &texture_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture)));
+    D3D12_RESOURCE_DESC texture_desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_NV12, decoder.video_width, decoder.video_height, 1, 1);
+    texture_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_GPU_UPLOAD);
+    hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &texture_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture)));
 
-    D3D12_UNORDERED_ACCESS_VIEW_DESC luminance_subresource = CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2D(DXGI_FORMAT_R8_UINT, 0, 0);
+    uint32_t pixel_count = decoder.video_width * decoder.video_height;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC luminance_subresource = {};
+    luminance_subresource.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+    luminance_subresource.Format = DXGI_FORMAT_R8_UINT;
+    luminance_subresource.Texture2DArray.ArraySize = -1;
+    luminance_subresource.Texture2DArray.PlaneSlice = 0;
     D3D12_CPU_DESCRIPTOR_HANDLE luminance_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart(), 0, cbv_srv_uav_descriptor_size);
     device->CreateUnorderedAccessView(texture.Get(), nullptr, &luminance_subresource, luminance_handle);
-    D3D12_UNORDERED_ACCESS_VIEW_DESC chrominance_subresource = CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2D(DXGI_FORMAT_R8_UINT, 0, 1);
+    D3D12_UNORDERED_ACCESS_VIEW_DESC chrominance_subresource = {};
+    chrominance_subresource.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+    chrominance_subresource.Format = DXGI_FORMAT_R8G8_UINT;
+    chrominance_subresource.Texture2DArray.ArraySize = -1;
+    chrominance_subresource.Texture2DArray.PlaneSlice = 1;
     D3D12_CPU_DESCRIPTOR_HANDLE chrominance_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart(), 1, cbv_srv_uav_descriptor_size);
     device->CreateUnorderedAccessView(texture.Get(), nullptr, &chrominance_subresource, chrominance_handle);
 }
