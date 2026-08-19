@@ -223,8 +223,8 @@ void Renderer::init_renderer() {
 
         {
             D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(buffer_size);
-            D3D12_HEAP_PROPERTIES heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-            hresult(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vertex_buffer)));
+            D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+            hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vertex_buffer)));
         }
 
         {
@@ -247,19 +247,16 @@ void Renderer::create_texture() {
     }
 
     media_buffer = nullptr;
+    packed_texture = nullptr;
 
-    upload_buffer = nullptr;
-    texture = nullptr;
-
-    D3D12_RESOURCE_DESC texture_desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_NV12, decoder.video_width, decoder.video_height, 1, 1);
-    D3D12_HEAP_PROPERTIES default_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-    hresult(device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &texture_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture)));
-
-    D3D12_RESOURCE_DESC texture_buffer_desc = CD3DX12_RESOURCE_DESC::Buffer(decoder.output_stream_info.cbSize);
+    hresult(MFCreate2DMediaBuffer(decoder.video_width, decoder.video_height, MFVideoFormat_NV12.Data1, FALSE, &media_buffer));
+    DWORD max_length = 0;
+    media_buffer->GetMaxLength(&max_length);
     D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-    hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &texture_buffer_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&upload_buffer)));
+    D3D12_RESOURCE_DESC resource_desc = CD3DX12_RESOURCE_DESC::Buffer(max_length);
+    hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&packed_texture)));
 
-    hresult(MFCreateMemoryBuffer(decoder.output_stream_info.cbSize, &media_buffer));
+    std::println("GPU resources created");
 
     if (!sample) {
         hresult(MFCreateSample(&sample));
@@ -315,8 +312,7 @@ void Renderer::render_frame() {
     {
         std::vector<D3D12_RESOURCE_BARRIER> barriers = {
             CD3DX12_RESOURCE_BARRIER::Transition(backbuffers[frame_index].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET),
-            CD3DX12_RESOURCE_BARRIER::Transition(upload_buffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST),
+            CD3DX12_RESOURCE_BARRIER::Transition(packed_texture.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
         };
         graphics_command_list->ResourceBarrier((UINT)barriers.size(), barriers.data());
     }

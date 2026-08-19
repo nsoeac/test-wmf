@@ -26,8 +26,7 @@ struct Renderer {
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline_state;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
     Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> texture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> upload_buffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> packed_texture;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, frame_count> backbuffers;
     Microsoft::WRL::ComPtr<IMFMediaBuffer> media_buffer;
     Microsoft::WRL::ComPtr<IMFSample> sample;
