@@ -103,6 +103,7 @@ void Renderer::init_renderer() {
         auto feature_level = D3D_FEATURE_LEVEL_11_0;
         IUnknown *command_queues[] = { command_queue.Get() };
         hresult(D3D11On12CreateDevice(device.Get(), 0, &feature_level, 1, command_queues, 1, 0, &device_11, &device_context_11, nullptr));
+        hresult(device_11.As(&device_11_on_12));
 
         std::println("Initialising swap chain");
 
@@ -242,25 +243,27 @@ void Renderer::init_renderer() {
 void Renderer::create_texture() {
     texture = nullptr;
     D3D12_RESOURCE_DESC texture_desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_NV12, decoder.video_width, decoder.video_height, 1, 1);
-    texture_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    texture_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_GPU_UPLOAD);
     hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &texture_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture)));
 
-    uint32_t pixel_count = decoder.video_width * decoder.video_height;
     D3D12_UNORDERED_ACCESS_VIEW_DESC luminance_subresource = {};
     luminance_subresource.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
     luminance_subresource.Format = DXGI_FORMAT_R8_UINT;
-    luminance_subresource.Texture2DArray.ArraySize = -1;
+    luminance_subresource.Texture2DArray.ArraySize = (uint32_t)-1;
     luminance_subresource.Texture2DArray.PlaneSlice = 0;
     D3D12_CPU_DESCRIPTOR_HANDLE luminance_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart(), 0, cbv_srv_uav_descriptor_size);
     device->CreateUnorderedAccessView(texture.Get(), nullptr, &luminance_subresource, luminance_handle);
     D3D12_UNORDERED_ACCESS_VIEW_DESC chrominance_subresource = {};
     chrominance_subresource.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
     chrominance_subresource.Format = DXGI_FORMAT_R8G8_UINT;
-    chrominance_subresource.Texture2DArray.ArraySize = -1;
+    chrominance_subresource.Texture2DArray.ArraySize = (uint32_t)-1;
     chrominance_subresource.Texture2DArray.PlaneSlice = 1;
     D3D12_CPU_DESCRIPTOR_HANDLE chrominance_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart(), 1, cbv_srv_uav_descriptor_size);
     device->CreateUnorderedAccessView(texture.Get(), nullptr, &chrominance_subresource, chrominance_handle);
+
+    D3D11_RESOURCE_FLAGS flags = {};
+    hresult(device_11_on_12->CreateWrappedResource(texture.Get(), &flags, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, __uuidof(ID3D11Texture2D), &texture_11));
 }
 
 Renderer::Renderer(Config &config) :

@@ -23,7 +23,9 @@ struct Renderer {
     Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
     Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> texture;
+    Microsoft::WRL::ComPtr<ID3D11On12Device> device_11_on_12;
     Microsoft::WRL::ComPtr<ID3D11Device> device_11;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture_11;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> device_context_11;
     D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view = {};
     HANDLE fence_event = NULL;
