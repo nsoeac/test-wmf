@@ -248,6 +248,8 @@ void Renderer::create_texture() {
     decoder.media_buffer = nullptr;
     packed_texture = nullptr;
 
+    std::println("Creating buffer with size {}", decoder.output_stream_info.cbSize);
+
     hresult(MFCreateMemoryBuffer(decoder.output_stream_info.cbSize, &decoder.media_buffer));
     D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
     D3D12_RESOURCE_DESC resource_desc = CD3DX12_RESOURCE_DESC::Buffer(decoder.output_stream_info.cbSize);
@@ -328,6 +330,7 @@ void Renderer::render_frame() {
     graphics_command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
     graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder.video_width, 0);
     graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder.video_height, 1);
+    std::println("Dimensions set: {}, {}", decoder.video_width, decoder.video_height);
     graphics_command_list->DrawInstanced(6, 1, 0, 0);
 
     {

@@ -16,9 +16,14 @@ PSInput VSMain(float4 position : SV_Position) {
 }
 
 float4 PSMain(PSInput input) : SV_Target {
-    // float2 normalised_offset = (input.position.xy + 1.0f) / 2.0f;
-    // int2 coords = normalised_offset.xy * int2(width, height);
-    // uint status = 0;
-    // float luminance = subsampled_texture.Load(coords.x * coords.y, status) / 256.0f;
-    return float4(1.0f, 0.0f, 0.0f, 1.0f);
+    uint pixel_index = input.position.y * width + input.position.x;
+    uint load_index = pixel_index & ~0x0F;
+    uint byte_index_in_load = pixel_index % 4;
+    uint shift = (3 - byte_index_in_load) * 8;
+    uint mask = 0xFFu << shift;
+    uint status = 0;
+    uint loaded_value = subsampled_texture.Load(load_index, status);
+    uint result = (loaded_value & mask) >> shift;
+    float magnitude = result / 255.0f;
+    return float4(magnitude, magnitude, magnitude, 1.0f);
 }
