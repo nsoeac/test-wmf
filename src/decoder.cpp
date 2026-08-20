@@ -77,6 +77,12 @@ void Decoder::init_decoder() {
     hresult(decoder->GetInputStreamInfo(0, &input_stream_info));
     hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
 
+    {
+        ComPtr<IMFAttributes> attributes;
+        hresult(decoder->GetAttributes(&attributes));
+        hresult(attributes->SetUINT32(MF_LOW_LATENCY, TRUE));
+    }
+
     hresult(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
 
     sample_duration = 10'000'000 /* Hundred-nanoseconds in a second. */ / video_framerate;
