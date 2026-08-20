@@ -248,11 +248,9 @@ void Renderer::create_texture() {
     media_buffer = nullptr;
     packed_texture = nullptr;
 
-    hresult(MFCreate2DMediaBuffer(decoder.video_width, decoder.video_height, MFVideoFormat_NV12.Data1, FALSE, &media_buffer));
-    DWORD max_length = 0;
-    media_buffer->GetMaxLength(&max_length);
+    hresult(MFCreateMemoryBuffer(decoder.output_stream_info.cbSize, &media_buffer));
     D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-    D3D12_RESOURCE_DESC resource_desc = CD3DX12_RESOURCE_DESC::Buffer(max_length);
+    D3D12_RESOURCE_DESC resource_desc = CD3DX12_RESOURCE_DESC::Buffer(decoder.output_stream_info.cbSize);
     hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&packed_texture)));
 
     std::println("GPU resources created");

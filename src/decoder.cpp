@@ -111,6 +111,21 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
         case S_OK: {
             std::println("Sample processed");
 
+            D3D12_RANGE read_range = {};
+
+            void *buffer_data = nullptr;
+            hresult(renderer->packed_texture->Map(0, &read_range, &buffer_data));
+            BYTE *media_data = nullptr;
+            DWORD current_length = 0;
+            DWORD max_length = 0;
+            hresult(media_buffer->Lock(&media_data, &max_length, &current_length));
+            std::memcpy(buffer_data, media_data, max_length);
+            hresult(media_buffer->Unlock());
+            D3D12_RANGE written_range = {};
+            written_range.Begin = 0;
+            written_range.End = max_length;
+            renderer->packed_texture->Unmap(0, &written_range);
+
             renderer->render_frame();
 
             break;
