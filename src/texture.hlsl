@@ -1,5 +1,4 @@
-RWStructuredBuffer<uint> luminance : register(u0);
-RWStructuredBuffer<uint2> chrominance : register(u1);
+ByteAddressBuffer subsampled_texture : register(t0);
 
 cbuffer image_dimensions : register(b0) {
     int width;
@@ -20,5 +19,6 @@ float4 PSMain(PSInput input) : SV_Target {
     float2 normalised_offset = (input.position.xy + 1.0f) / 2.0f;
     int2 coords = normalised_offset.xy * int2(width, height);
     uint status = 0;
-    return float4(luminance.Load(coords.x * coords.y, status).rrr, 1.0f);
+    float luminance = subsampled_texture.Load(coords.x * coords.y, status) / 256.0f;
+    return float4(luminance, luminance, luminance, 1.0f);
 }

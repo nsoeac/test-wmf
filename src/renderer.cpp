@@ -170,10 +170,9 @@ void Renderer::init_renderer() {
             } },
         };
 
-        CD3DX12_ROOT_PARAMETER1 root_parameters[3] = {};
-        root_parameters[0].InitAsUnorderedAccessView(0);
-        root_parameters[1].InitAsUnorderedAccessView(1);
-        root_parameters[2].InitAsConstants(2, 0);
+        CD3DX12_ROOT_PARAMETER1 root_parameters[2] = {};
+        root_parameters[0].InitAsShaderResourceView(0);
+        root_parameters[1].InitAsConstants(2, 0);
 
         CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
         root_signature_desc.Init_1_1(_countof(root_parameters), root_parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
@@ -312,7 +311,7 @@ void Renderer::render_frame() {
     {
         std::vector<D3D12_RESOURCE_BARRIER> barriers = {
             CD3DX12_RESOURCE_BARRIER::Transition(backbuffers[frame_index].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET),
-            CD3DX12_RESOURCE_BARRIER::Transition(packed_texture.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(packed_texture.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
         };
         graphics_command_list->ResourceBarrier((UINT)barriers.size(), barriers.data());
     }
@@ -324,19 +323,35 @@ void Renderer::render_frame() {
     FLOAT clear_colour[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
     graphics_command_list->ClearRenderTargetView(backbuffer_handle, clear_colour, 0, nullptr);
 
-    graphics_command_list->SetGraphicsRootUnorderedAccessView(0, texture->GetGPUVirtualAddress());
+    graphics_command_list->SetGraphicsRootSignature(root_signature.Get());
+    graphics_command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    graphics_command_list->SetGraphicsRootShaderResourceView(0, packed_texture->GetGPUVirtualAddress());
+    graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder.video_width, 0);
+    graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder.video_height, 1);
     graphics_command_list->DrawInstanced(6, 1, 0, 0);
 
     {
         std::vector<D3D12_RESOURCE_BARRIER> barriers = {
             CD3DX12_RESOURCE_BARRIER::Transition(backbuffers[frame_index].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT),
-            CD3DX12_RESOURCE_BARRIER::Transition(upload_buffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
-            CD3DX12_RESOURCE_BARRIER::Transition(texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(packed_texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
         };
         graphics_command_list->ResourceBarrier((UINT)barriers.size(), barriers.data());
     }
 
+    graphics_command_list->Close();
+    ID3D12CommandList *command_lists[] = { graphics_command_list.Get() };
+    command_queue->ExecuteCommandLists(_countof(command_lists), command_lists);
+
+    HRESULT present_result = swap_chain->Present(0, 0);
+    switch (present_result) {
+    case DXGI_STATUS_OCCLUDED:
+        break;
+    default:
+        hresult(present_result);
+    }
+
     wait_for_previous_frame();
+    frame_index = swap_chain->GetCurrentBackBufferIndex();
 }
 
 void Renderer::wait_for_previous_frame() {
