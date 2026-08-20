@@ -17,9 +17,9 @@ PSInput VSMain(float4 position : SV_Position) {
 
 float4 PSMain(PSInput input) : SV_Target {
     uint pixel_index = input.position.y * width + input.position.x;
-    uint load_index = pixel_index & ~0x0F;
+    uint load_index = pixel_index & ~0x03;
     uint byte_index_in_load = pixel_index % 4;
-    uint shift = (3 - byte_index_in_load) * 8;
+    uint shift = byte_index_in_load * 8;
     uint mask = 0xFFu << shift;
     uint status = 0;
     uint loaded_value = subsampled_texture.Load(load_index, status);
