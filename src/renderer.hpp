@@ -28,8 +28,6 @@ struct Renderer {
     Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> packed_texture;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, frame_count> backbuffers;
-    Microsoft::WRL::ComPtr<IMFMediaBuffer> media_buffer;
-    Microsoft::WRL::ComPtr<IMFSample> sample;
     D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view = {};
     HANDLE fence_event = NULL;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence;

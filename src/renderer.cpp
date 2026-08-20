@@ -241,26 +241,26 @@ void Renderer::init_renderer() {
 }
 
 void Renderer::create_texture() {
-    if (sample != nullptr) {
-        hresult(sample->RemoveBufferByIndex(0));
+    if (decoder.output_sample != nullptr) {
+        hresult(decoder.output_sample->RemoveBufferByIndex(0));
     }
 
-    media_buffer = nullptr;
+    decoder.media_buffer = nullptr;
     packed_texture = nullptr;
 
-    hresult(MFCreateMemoryBuffer(decoder.output_stream_info.cbSize, &media_buffer));
+    hresult(MFCreateMemoryBuffer(decoder.output_stream_info.cbSize, &decoder.media_buffer));
     D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
     D3D12_RESOURCE_DESC resource_desc = CD3DX12_RESOURCE_DESC::Buffer(decoder.output_stream_info.cbSize);
     hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&packed_texture)));
 
     std::println("GPU resources created");
 
-    if (!sample) {
-        hresult(MFCreateSample(&sample));
-        decoder.data_buffer.pSample = sample.Get();
+    if (!decoder.output_sample) {
+        hresult(MFCreateSample(&decoder.output_sample));
+        decoder.data_buffer.pSample = decoder.output_sample.Get();
     }
 
-    hresult(sample->AddBuffer(media_buffer.Get()));
+    hresult(decoder.output_sample->AddBuffer(decoder.media_buffer.Get()));
 }
 
 Renderer::Renderer(Config &config) :
@@ -324,6 +324,8 @@ void Renderer::render_frame() {
     graphics_command_list->SetGraphicsRootSignature(root_signature.Get());
     graphics_command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     graphics_command_list->SetGraphicsRootShaderResourceView(0, packed_texture->GetGPUVirtualAddress());
+    assert(vertex_buffer_view.SizeInBytes == (sizeof(Vertex) * 6));
+    graphics_command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
     graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder.video_width, 0);
     graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder.video_height, 1);
     graphics_command_list->DrawInstanced(6, 1, 0, 0);
