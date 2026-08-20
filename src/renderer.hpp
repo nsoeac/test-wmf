@@ -15,6 +15,7 @@ struct Renderer {
     static constexpr uint32_t frame_count = 2;
     static constexpr uint32_t width = 1280;
     static constexpr uint32_t height = 720;
+    bool shutting_down = false;
 
     Microsoft::WRL::ComPtr<ID3D12Device> device;
     Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain;
@@ -40,12 +41,15 @@ struct Renderer {
     uint32_t rtv_descriptor_size = 0;
     uint32_t cbv_srv_uav_descriptor_size = 0;
 
+    Decoder decoder;
+    std::thread decoder_thread;
+
     static constexpr std::string_view class_name = "Window";
     static constexpr std::string_view window_name = "Renderer";
     Renderer(Config &config);
     void wait_for_previous_frame();
     void render_frame();
     void init_renderer();
+    void decoder_thread_function();
     void create_buffer(uint32_t buffer_size);
-    Decoder decoder;
 };

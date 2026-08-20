@@ -42,6 +42,9 @@ LRESULT Renderer::window_procedure(HWND handle, UINT message, WPARAM w_param, LP
 LRESULT Renderer::handle_message(UINT message, WPARAM w_param, LPARAM l_param) {
     switch (message) {
     case WM_CLOSE:
+        shutting_down = true;
+        decoder_thread.join();
+
         DestroyWindow(handle);
         break;
     case WM_DESTROY:
@@ -248,6 +251,15 @@ void Renderer::create_buffer(uint32_t buffer_size) {
     hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&packed_texture)));
 }
 
+void Renderer::decoder_thread_function() {
+    decoder.connect();
+    decoder.init_decoder();
+
+    while (!shutting_down) {
+        decoder.handle_packet();
+    }
+}
+
 Renderer::Renderer(Config &config) :
     decoder(config, this) {
     {
@@ -276,13 +288,12 @@ Renderer::Renderer(Config &config) :
 
     init_renderer();
 
-    {
-        decoder.connect();
-        decoder.init_decoder();
+    decoder_thread = std::thread(&Renderer::decoder_thread_function, this);
 
-        while (true) {
-            decoder.handle_packet();
-        }
+    MSG message = {};
+    while (GetMessageW(&message, NULL, 0, 0) > 0) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
     }
 }
 
