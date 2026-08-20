@@ -46,6 +46,6 @@ struct Renderer {
     void wait_for_previous_frame();
     void render_frame();
     void init_renderer();
-    void create_texture();
+    void create_buffer(uint32_t buffer_size);
     Decoder decoder;
 };

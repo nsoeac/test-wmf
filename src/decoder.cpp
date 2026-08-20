@@ -20,7 +20,21 @@ void Decoder::connect() {
 }
 
 void Decoder::create_texture() {
-    renderer->create_texture();
+    if (output_sample != nullptr) {
+        hresult(output_sample->RemoveBufferByIndex(0));
+    }
+
+    media_buffer = nullptr;
+    hresult(MFCreateMemoryBuffer(output_stream_info.cbSize, &media_buffer));
+
+    renderer->create_buffer(output_stream_info.cbSize);
+
+    if (!output_sample) {
+        hresult(MFCreateSample(&output_sample));
+        data_buffer.pSample = output_sample.Get();
+    }
+
+    hresult(output_sample->AddBuffer(media_buffer.Get()));
 }
 
 void Decoder::init_decoder() {
