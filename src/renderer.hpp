@@ -13,6 +13,7 @@ struct Renderer {
     unsigned width = 1280;
     unsigned height = 720;
     bool shutting_down = false;
+    bool packed_texture_is_valid = false;
 
     Microsoft::WRL::ComPtr<ID3D12Device> device;
     Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain;
@@ -47,8 +48,9 @@ struct Renderer {
 
     static constexpr std::string_view class_name = "Window";
     static constexpr std::string_view window_name = "Renderer";
-    void start(HWND window_handle, struct Decoder *decoder, struct Window* window);
-    void create_buffer(uint32_t buffer_size);
+    void start(HWND window_handle, struct Decoder *decoder, struct Window *window);
+    void create_packed_texture(uint32_t buffer_size);
+    void update_packed_texture(std::span<const uint8_t> data);
 private:
     void create_backbuffers();
     void update();

@@ -14,7 +14,7 @@ void Decoder::create_texture() {
     media_buffer = nullptr;
     hresult(MFCreateMemoryBuffer(output_stream_info.cbSize, &media_buffer));
 
-    renderer_->create_buffer(output_stream_info.cbSize);
+    renderer_->create_packed_texture(output_stream_info.cbSize);
 
     if (!output_sample) {
         hresult(MFCreateSample(&output_sample));
@@ -125,25 +125,17 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
             continue;
         }
         case S_OK: {
-            std::println("Sample processed");
+            std::println("Sample processed; updating packed texture");
 
-            {
-                std::unique_lock lock(renderer_->mutex);
-                D3D12_RANGE read_range = {};
+            BYTE *media_data = nullptr;
+            DWORD current_length = 0;
+            DWORD max_length = 0;
+            hresult(media_buffer->Lock(&media_data, &max_length, &current_length));
+            std::span<uint8_t> buffer_span = { media_data, max_length };
 
-                void *buffer_data = nullptr;
-                hresult(renderer_->packed_texture->Map(0, &read_range, &buffer_data));
-                BYTE *media_data = nullptr;
-                DWORD current_length = 0;
-                DWORD max_length = 0;
-                hresult(media_buffer->Lock(&media_data, &max_length, &current_length));
-                std::memcpy(buffer_data, media_data, max_length);
-                hresult(media_buffer->Unlock());
-                D3D12_RANGE written_range = {};
-                written_range.Begin = 0;
-                written_range.End = max_length;
-                renderer_->packed_texture->Unmap(0, &written_range);
-            }
+            renderer_->update_packed_texture(buffer_span);
+
+            hresult(media_buffer->Unlock());
 
             break;
         }

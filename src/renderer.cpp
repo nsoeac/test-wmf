@@ -194,7 +194,23 @@ void Renderer::start(HWND window_handle, Decoder *decoder, Window *window) {
     thread = std::thread(&Renderer::render_loop, this);
 }
 
-void Renderer::create_buffer(uint32_t buffer_size) {
+void Renderer::update_packed_texture(std::span<const uint8_t> buffer) {
+    std::unique_lock lock(mutex);
+
+    D3D12_RANGE read_range = {};
+
+    void *buffer_data = nullptr;
+    hresult(packed_texture->Map(0, &read_range, &buffer_data));
+
+    std::memcpy(buffer_data, buffer.data(), buffer.size());
+
+    D3D12_RANGE written_range = {};
+    written_range.Begin = 0;
+    written_range.End = buffer.size();
+    packed_texture->Unmap(0, &written_range);
+}
+
+void Renderer::create_packed_texture(uint32_t buffer_size) {
     std::unique_lock lock(mutex);
 
     packed_texture = nullptr;
@@ -202,18 +218,22 @@ void Renderer::create_buffer(uint32_t buffer_size) {
     D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
     D3D12_RESOURCE_DESC resource_desc = CD3DX12_RESOURCE_DESC::Buffer(buffer_size);
     hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&packed_texture)));
+
+    packed_texture_is_valid = true;
 }
 
 void Renderer::render() {
-    std::println("Rendering frame");
-
     hresult(graphics_command_list->Reset(command_allocator.Get(), pipeline_state.Get()));
 
     {
         std::vector<D3D12_RESOURCE_BARRIER> barriers = {
             CD3DX12_RESOURCE_BARRIER::Transition(backbuffers[frame_index].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET),
-            CD3DX12_RESOURCE_BARRIER::Transition(packed_texture.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
         };
+
+        if (packed_texture_is_valid) {
+            barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(packed_texture.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+        }
+
         graphics_command_list->ResourceBarrier((UINT)barriers.size(), barriers.data());
     }
 
@@ -224,21 +244,26 @@ void Renderer::render() {
     FLOAT clear_colour[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
     graphics_command_list->ClearRenderTargetView(backbuffer_handle, clear_colour, 0, nullptr);
 
-    graphics_command_list->SetGraphicsRootSignature(root_signature.Get());
-    graphics_command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    graphics_command_list->SetGraphicsRootShaderResourceView(0, packed_texture->GetGPUVirtualAddress());
-    assert(vertex_buffer_view.SizeInBytes == (sizeof(Vertex) * 6));
-    graphics_command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
-    graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder_->width, 0);
-    graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder_->height, 1);
-    std::println("Dimensions set: {}, {}", decoder_->width, decoder_->height);
-    graphics_command_list->DrawInstanced(6, 1, 0, 0);
+    if (packed_texture_is_valid) {
+        graphics_command_list->SetGraphicsRootSignature(root_signature.Get());
+        graphics_command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        graphics_command_list->SetGraphicsRootShaderResourceView(0, packed_texture->GetGPUVirtualAddress());
+        assert(vertex_buffer_view.SizeInBytes == (sizeof(Vertex) * 6));
+        graphics_command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
+        graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder_->width, 0);
+        graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder_->height, 1);
+        graphics_command_list->DrawInstanced(6, 1, 0, 0);
+    }
 
     {
         std::vector<D3D12_RESOURCE_BARRIER> barriers = {
-            CD3DX12_RESOURCE_BARRIER::Transition(backbuffers[frame_index].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT),
-            CD3DX12_RESOURCE_BARRIER::Transition(packed_texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+            CD3DX12_RESOURCE_BARRIER::Transition(backbuffers[frame_index].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT)
         };
+
+        if (packed_texture_is_valid) {
+            barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(packed_texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+        }
+
         graphics_command_list->ResourceBarrier((UINT)barriers.size(), barriers.data());
     }
 
@@ -293,6 +318,8 @@ void Renderer::update() {
 void Renderer::render_loop() {
     while (!window_->started_shutting_down) {
         update();
+
+        std::unique_lock lock(mutex);
         render();
     }
 }
