@@ -23,14 +23,20 @@ struct App {
         renderer.start(window.handle, &decoder, &window);
         decoder.start(video_width, video_height, video_framerate, &renderer);
         connection.ready();
-    
-        while (!window.started_shutting_down) {
-            std::unique_lock lock(connection.mutex);
-            connection.condition_variable.wait(lock, [this]() { return !connection.buffers.empty(); });
 
-            for (std::vector<uint8_t> &buffer : connection.buffers) {
+        std::vector<std::vector<uint8_t>> working_buffers;
+        while (!window.started_shutting_down) {
+            {
+                std::unique_lock lock(connection.mutex);
+                connection.condition_variable.wait(lock, [this]() { return !connection.buffers.empty(); });
+                std::swap(connection.buffers, working_buffers);
+            }
+
+            for (std::vector<uint8_t> &buffer : working_buffers) {
                 decoder.process_frame(buffer);
             }
+
+            working_buffers.clear();
         }
     }
 };
