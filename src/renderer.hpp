@@ -23,6 +23,7 @@ struct Double_Buffer {
     void update_consumer_index() {
         if (consumer_index == producer_index) {
             consumer_index = 1 - consumer_index;
+            std::println("Consumer index is now {}", consumer_index);
         }
 
         condition_variable.notify_all();
@@ -39,6 +40,7 @@ struct Double_Buffer {
 
     void update_producer_index() {
         producer_index = 1 - producer_index;
+        std::println("Producer index is now {}", producer_index);
     }
 private:
     std::array<Buffer, 2> buffers;

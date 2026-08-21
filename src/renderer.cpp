@@ -212,6 +212,8 @@ void Renderer::update_packed_texture(std::span<const uint8_t> buffer) {
     written_range.Begin = 0;
     written_range.End = buffer.size();
     producer_buffer.resource->Unmap(0, &written_range);
+
+    packed_texture.update_producer_index();
 }
 
 void Renderer::create_producer_buffer(Double_Buffer::Buffer &producer_buffer, uint32_t buffer_size) {
@@ -222,7 +224,6 @@ void Renderer::create_producer_buffer(Double_Buffer::Buffer &producer_buffer, ui
     hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&producer_buffer.resource)));
 
     producer_buffer.version = packed_texture.latest_version;
-    packed_texture.update_producer_index();
 }
 
 void Renderer::create_packed_texture(uint32_t buffer_size) {
@@ -230,6 +231,8 @@ void Renderer::create_packed_texture(uint32_t buffer_size) {
 
     auto &producer_buffer = packed_texture.producer_buffer();
     create_producer_buffer(producer_buffer, buffer_size);
+
+    packed_texture.update_producer_index();
 }
 
 void Renderer::render() {
