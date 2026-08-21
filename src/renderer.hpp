@@ -1,20 +1,17 @@
 #pragma once
 
-#include "decoder.hpp"
-
 struct Vertex {
     float x;
     float y;
 };
 
 struct Renderer {
-    HWND handle = {};
-    static LRESULT window_procedure(HWND, UINT, WPARAM, LPARAM);
-    LRESULT handle_message(UINT, WPARAM, LPARAM);
+    struct Decoder *decoder_ = nullptr;
+    struct Window *window_ = nullptr;
 
-    static constexpr uint32_t frame_count = 2;
-    static constexpr uint32_t width = 1280;
-    static constexpr uint32_t height = 720;
+    static constexpr unsigned frame_count = 2;
+    unsigned width = 1280;
+    unsigned height = 720;
     bool shutting_down = false;
 
     Microsoft::WRL::ComPtr<ID3D12Device> device;
@@ -36,20 +33,26 @@ struct Renderer {
     D3D12_RECT scissor = { 0, 0, (long)width, (long)height };
     static const DXGI_FORMAT swap_chain_format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
+    // These resources protect the texture from being destroyed while the renderer is rendering.
+
+    std::mutex mutex;
+    std::condition_variable condition_variable;
+
+    std::thread thread;
+
     uint64_t fence_value = 0;
     uint32_t frame_index = 0;
     uint32_t rtv_descriptor_size = 0;
     uint32_t cbv_srv_uav_descriptor_size = 0;
 
-    Decoder decoder;
-    std::thread decoder_thread;
-
     static constexpr std::string_view class_name = "Window";
     static constexpr std::string_view window_name = "Renderer";
-    Renderer(Config &config);
-    void wait_for_previous_frame();
-    void render_frame();
-    void init_renderer();
-    void decoder_thread_function();
+    void start(HWND window_handle, struct Decoder *decoder, struct Window* window);
     void create_buffer(uint32_t buffer_size);
+private:
+    void create_backbuffers();
+    void update();
+    void render_loop();
+    void wait_for_previous_frame();
+    void render();
 };

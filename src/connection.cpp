@@ -1,8 +1,8 @@
-#include "networking.hpp"
+#include "connection.hpp"
 
 #include "lib/lib.hpp"
 
-Networking::Header Networking::Packet::header() const {
+Connection::Header Connection::Packet::header() const {
     assert(buffer.size() >= header_size);
 
     Header header;
@@ -11,7 +11,7 @@ Networking::Header Networking::Packet::header() const {
     return header;
 }
 
-int64_t Networking::Packet::packet_index() const {
+int64_t Connection::Packet::packet_index() const {
     assert(buffer.size() >= header_size);
 
     int64_t packet_index = 0;
@@ -20,11 +20,11 @@ int64_t Networking::Packet::packet_index() const {
     return packet_index;
 }
 
-bool Networking::Message::is_complete() const {
+bool Connection::Message::is_complete() const {
     return packet_count == (int64_t)packets.size();
 }
 
-[[nodiscard]] std::vector<uint8_t> Networking::remove_message_and_get_payload(Message &message) {
+[[nodiscard]] std::vector<uint8_t> Connection::remove_message_and_get_payload(Message &message) {
     assert(message.is_complete());
 
     // Initialise buffer of appropriate size.
@@ -50,7 +50,7 @@ bool Networking::Message::is_complete() const {
 }
 
 // Returns message buffer if it completes a message.
-[[nodiscard]] std::optional<std::vector<uint8_t>> Networking::add_packet(Packet &&packet) {
+[[nodiscard]] std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet) {
     Header header = packet.header();
 
     auto message_it = std::ranges::find_if(messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Message::message_index);
@@ -84,14 +84,14 @@ bool Networking::Message::is_complete() const {
     }
 }
 
-Networking::Networking(Config &config) :
+Connection::Connection(Config &config) :
     address(config.address),
     port(config.port) {
     wsa_send_buffer.buf = (CHAR *)send_buffer.data();
     wsa_send_buffer.len = (ULONG)send_buffer.size();
 }
 
-std::vector<uint8_t> Networking::get_initial_message() {
+std::vector<uint8_t> Connection::get_initial_message() {
     if (print_debug_strings) {
         std::println("Resolving server address");
     }
@@ -163,53 +163,82 @@ std::vector<uint8_t> Networking::get_initial_message() {
     return initial_message;
 }
 
-[[nodiscard]] std::vector<uint8_t> Networking::receive() {
-    if (!ready_packet_sent) {
-        if (print_debug_strings) {
-            std::println("Sending 'ready' packet to server");
-        }
-
-        if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
-            THROW_WSA(WSASend);
-        }
-
-        ready_packet_sent = true;
-    }
-
-    if (print_debug_strings) {
-        std::println("Receiving packets from server");
-    }
-
-    std::vector<uint8_t> buffer;
-
-    {
+void Connection::receive() {
+    while (true) {
         std::optional<std::vector<uint8_t>> message_buffer_option = std::nullopt;
 
         while (message_buffer_option == std::nullopt) {
             Packet packet;
             WSABUF packet_wsabuf = get_wsabuf(packet.buffer);
 
-            DWORD bytes_received = 0;
             DWORD flags = 0;
+            DWORD bytes_received = 0;
             if (WSARecv(socket, &packet_wsabuf, 1, &bytes_received, &flags, NULL, NULL) != 0) {
                 THROW_WSA(WSARecv);
+            }
+
+            if (print_debug_strings) {
+                std::println("Received {} byte(s) from server ({} messages remain)", bytes_received, messages.size());
             }
 
             packet.buffer.resize(bytes_received);
             message_buffer_option = add_packet(std::move(packet));
         }
 
-        buffer = std::move(*message_buffer_option);
-    }
+        {
+            std::unique_lock lock(mutex);
+            buffers.push_back(std::move(*message_buffer_option));
+        }
 
-    if (print_debug_strings) {
-        std::println("Received {} byte(s) from server ({} messages remain)", buffer.size(), messages.size());
+        condition_variable.notify_all();
     }
+    while (true) {
+        std::optional<std::vector<uint8_t>> message_buffer_option = std::nullopt;
 
-    return buffer;
+        while (message_buffer_option == std::nullopt) {
+            Packet packet;
+            WSABUF packet_wsabuf = get_wsabuf(packet.buffer);
+
+            DWORD flags = 0;
+            DWORD bytes_received = 0;
+            if (WSARecv(socket, &packet_wsabuf, 1, &bytes_received, &flags, NULL, NULL) != 0) {
+                THROW_WSA(WSARecv);
+            }
+
+            if (print_debug_strings) {
+                std::println("Received {} byte(s) from server ({} messages remain)", bytes_received, messages.size());
+            }
+
+            packet.buffer.resize(bytes_received);
+            message_buffer_option = add_packet(std::move(packet));
+        }
+
+        {
+            std::unique_lock lock(mutex);
+            buffers.push_back(std::move(*message_buffer_option));
+        }
+
+        condition_variable.notify_all();
+    }
 }
 
-WSABUF Networking::get_wsabuf(std::span<uint8_t> span) {
+void Connection::ready() {
+    assert(!ready_packet_sent);
+
+    if (print_debug_strings) {
+        std::println("Sending 'ready' packet to server");
+    }
+
+    if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
+        THROW_WSA(WSASend);
+    }
+
+    ready_packet_sent = true;
+
+    receive_thread = std::thread(&Connection::receive, this);
+}
+
+WSABUF Connection::get_wsabuf(std::span<uint8_t> span) {
     WSABUF wsabuf = {};
     wsabuf.buf = (CHAR *)span.data();
     wsabuf.len = (ULONG)span.size();

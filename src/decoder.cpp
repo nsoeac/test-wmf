@@ -6,19 +6,6 @@
 
 using Microsoft::WRL::ComPtr;
 
-Decoder::Decoder(Config &config, Renderer *renderer) : net(config), renderer(renderer) {}
-
-void Decoder::connect() {
-    std::vector<uint8_t> initial_message = net.get_initial_message();
-
-    std::println("Setting up initial state");
-
-    std::span<int32_t> initial_values = { (int32_t *)(initial_message.data()), (int32_t *)(initial_message.data() + sizeof(int32_t) * 4) };
-    video_width = initial_values[1];
-    video_height = initial_values[2];
-    video_framerate = initial_values[3];
-}
-
 void Decoder::create_texture() {
     if (output_sample != nullptr) {
         hresult(output_sample->RemoveBufferByIndex(0));
@@ -27,7 +14,7 @@ void Decoder::create_texture() {
     media_buffer = nullptr;
     hresult(MFCreateMemoryBuffer(output_stream_info.cbSize, &media_buffer));
 
-    renderer->create_buffer(output_stream_info.cbSize);
+    renderer_->create_buffer(output_stream_info.cbSize);
 
     if (!output_sample) {
         hresult(MFCreateSample(&output_sample));
@@ -37,7 +24,7 @@ void Decoder::create_texture() {
     hresult(output_sample->AddBuffer(media_buffer.Get()));
 }
 
-void Decoder::init_decoder() {
+void Decoder::init() {
     std::println("Setting decoder input type");
 
     for (DWORD i = 0;; i++) {
@@ -49,7 +36,7 @@ void Decoder::init_decoder() {
         GUID subtype = {};
         hresult(input->GetGUID(MF_MT_SUBTYPE, &subtype));
         if ((major_type == MFMediaType_Video) && (subtype == MFVideoFormat_HEVC)) {
-            hresult(MFSetAttributeSize(input.Get(), MF_MT_FRAME_SIZE, video_width, video_height));
+            hresult(MFSetAttributeSize(input.Get(), MF_MT_FRAME_SIZE, width, height));
             hresult(decoder->SetInputType(0, input.Get(), 0));
             std::println("Input type set");
             break;
@@ -85,9 +72,18 @@ void Decoder::init_decoder() {
 
     hresult(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
 
-    sample_duration = 10'000'000 /* Hundred-nanoseconds in a second. */ / video_framerate;
+    sample_duration = 10'000'000 /* Hundred-nanoseconds in a second. */ / framerate;
 
     create_texture();
+}
+
+void Decoder::start(unsigned video_width, unsigned video_height, unsigned video_framerate, Renderer *renderer) {
+    width = video_width;
+    height = video_height;
+    framerate = video_framerate;
+    renderer_ = renderer;
+
+    thread = std::thread(&Decoder::init, this);
 }
 
 void Decoder::process_sample(ComPtr<IMFSample> sample) {
@@ -120,7 +116,7 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
 
             hresult(decoder->GetOutputStreamInfo(0, &output_stream_info));
 
-            hresult(MFGetAttributeSize(output_type.Get(), MF_MT_FRAME_SIZE, &video_width, &video_height));
+            hresult(MFGetAttributeSize(output_type.Get(), MF_MT_FRAME_SIZE, &width, &height));
 
             create_texture();
 
@@ -131,22 +127,23 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
         case S_OK: {
             std::println("Sample processed");
 
-            D3D12_RANGE read_range = {};
+            {
+                std::unique_lock lock(renderer_->mutex);
+                D3D12_RANGE read_range = {};
 
-            void *buffer_data = nullptr;
-            hresult(renderer->packed_texture->Map(0, &read_range, &buffer_data));
-            BYTE *media_data = nullptr;
-            DWORD current_length = 0;
-            DWORD max_length = 0;
-            hresult(media_buffer->Lock(&media_data, &max_length, &current_length));
-            std::memcpy(buffer_data, media_data, max_length);
-            hresult(media_buffer->Unlock());
-            D3D12_RANGE written_range = {};
-            written_range.Begin = 0;
-            written_range.End = max_length;
-            renderer->packed_texture->Unmap(0, &written_range);
-
-            renderer->render_frame();
+                void *buffer_data = nullptr;
+                hresult(renderer_->packed_texture->Map(0, &read_range, &buffer_data));
+                BYTE *media_data = nullptr;
+                DWORD current_length = 0;
+                DWORD max_length = 0;
+                hresult(media_buffer->Lock(&media_data, &max_length, &current_length));
+                std::memcpy(buffer_data, media_data, max_length);
+                hresult(media_buffer->Unlock());
+                D3D12_RANGE written_range = {};
+                written_range.Begin = 0;
+                written_range.End = max_length;
+                renderer_->packed_texture->Unmap(0, &written_range);
+            }
 
             break;
         }
@@ -203,17 +200,6 @@ void Decoder::process_frame(std::vector<uint8_t> &frame) {
     process_sample(sample);
 
     sample = nullptr;
-}
-
-void Decoder::handle_packet() {
-    std::vector<uint8_t> frame = net.receive();
-    process_frame(frame);
-}
-
-void Decoder::handle_packets() {
-    while (true) {
-        handle_packet();
-    }
 }
 
 bool Decoder::is_parameter_sets(std::span<uint8_t> buffer) {

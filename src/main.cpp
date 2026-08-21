@@ -1,4 +1,4 @@
-#include "renderer.hpp"
+#include "app.hpp"
 
 #include "lib/lib.hpp"
 
@@ -28,5 +28,5 @@ int main(int argc, char *argv[]) {
 
     Config config = read_config(argv[1]);
 
-    Renderer renderer(config);
+    App app(config);
 }

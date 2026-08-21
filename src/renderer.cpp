@@ -1,63 +1,16 @@
 #include "renderer.hpp"
 
+#include "decoder.hpp"
+#include "window.hpp"
+
 #include "lib/lib.hpp"
 
 using Microsoft::WRL::ComPtr;
 
-LRESULT Renderer::window_procedure(HWND handle, UINT message, WPARAM w_param, LPARAM l_param) {
-    Renderer *renderer = nullptr;
+void Renderer::start(HWND window_handle, Decoder *decoder, Window *window) {
+    decoder_ = decoder;
+    window_ = window;
 
-    if (message == WM_NCCREATE) {
-        CREATESTRUCTW *create_struct = (CREATESTRUCTW *)l_param;
-        renderer = (Renderer *)create_struct->lpCreateParams;
-
-        renderer->handle = handle;
-
-        SetLastError(0);
-        if (SetWindowLongPtrW(handle, GWLP_USERDATA, (LONG_PTR)renderer) == 0) {
-            DWORD error_code = GetLastError();
-            if (error_code != 0) {
-                std::println("SetWindowLongPtrW failed: {}", get_win32_error_from_code(error_code));
-                abort();
-            }
-        }
-    } else {
-        renderer = (Renderer *)GetWindowLongPtrW(handle, GWLP_USERDATA);
-        if (renderer == nullptr) {
-            DWORD error_code = GetLastError();
-            if (error_code != 0) {
-                std::println("GetWindowLongPtrW failed: {}", get_win32_error_from_code(error_code));
-                abort();
-            }
-        }
-    }
-
-    if (renderer) {
-        return renderer->handle_message(message, w_param, l_param);
-    } else {
-        return DefWindowProcW(handle, message, w_param, l_param);
-    }
-}
-
-LRESULT Renderer::handle_message(UINT message, WPARAM w_param, LPARAM l_param) {
-    switch (message) {
-    case WM_CLOSE:
-        shutting_down = true;
-        decoder_thread.join();
-
-        DestroyWindow(handle);
-        break;
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        break;
-    default:
-        return DefWindowProcW(handle, message, w_param, l_param);
-    }
-
-    return 0;
-}
-
-void Renderer::init_renderer() {
     std::println("Initialising factory and adapter");
 
     {
@@ -117,7 +70,7 @@ void Renderer::init_renderer() {
         swap_chain_desc.Scaling = DXGI_SCALING_NONE;
 
         ComPtr<IDXGISwapChain1> swap_chain_1;
-        hresult(factory->CreateSwapChainForHwnd(command_queue.Get(), handle, &swap_chain_desc, nullptr, nullptr, &swap_chain_1));
+        hresult(factory->CreateSwapChainForHwnd(command_queue.Get(), window_handle, &swap_chain_desc, nullptr, nullptr, &swap_chain_1));
         hresult(swap_chain_1.As(&swap_chain));
 
         std::println("Creating descriptor heaps");
@@ -137,11 +90,7 @@ void Renderer::init_renderer() {
             device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&rtv_heap));
         }
 
-        for (UINT i = 0; i < frame_count; i++) {
-            D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(rtv_heap->GetCPUDescriptorHandleForHeapStart(), i, rtv_descriptor_size);
-            hresult(swap_chain->GetBuffer(i, IID_PPV_ARGS(&backbuffers[i])));
-            device->CreateRenderTargetView(backbuffers[i].Get(), nullptr, rtv_handle);
-        }
+        create_backbuffers();
     }
 
     {
@@ -241,9 +190,13 @@ void Renderer::init_renderer() {
         vertex_buffer_view.StrideInBytes = sizeof(Vertex);
         vertex_buffer_view.SizeInBytes = (uint32_t)buffer_size;
     }
+
+    thread = std::thread(&Renderer::render_loop, this);
 }
 
 void Renderer::create_buffer(uint32_t buffer_size) {
+    std::unique_lock lock(mutex);
+
     packed_texture = nullptr;
 
     D3D12_HEAP_PROPERTIES upload_heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
@@ -251,53 +204,7 @@ void Renderer::create_buffer(uint32_t buffer_size) {
     hresult(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&packed_texture)));
 }
 
-void Renderer::decoder_thread_function() {
-    decoder.connect();
-    decoder.init_decoder();
-
-    while (!shutting_down) {
-        decoder.handle_packet();
-    }
-}
-
-Renderer::Renderer(Config &config) :
-    decoder(config, this) {
-    {
-        std::println("Initialising window");
-
-        std::wstring wide_class_name = convert(class_name);
-        std::wstring wide_window_name = convert(window_name);
-
-        HINSTANCE instance = (HINSTANCE)get_module_handle();
-        WNDCLASSW window_class = {};
-        window_class.lpfnWndProc = window_procedure;
-        window_class.hInstance = instance;
-        window_class.lpszClassName = wide_class_name.data();
-
-        if (RegisterClassW(&window_class) == 0) {
-            THROW_WIN32(RegisterClassW);
-        }
-
-        handle = CreateWindowExW(0, wide_class_name.data(), wide_window_name.data(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, width, height, NULL, NULL, instance, this);
-        if (handle == NULL) {
-            THROW_WIN32(CreateWindowExW);
-        }
-
-        ShowWindow(handle, SW_NORMAL);
-    }
-
-    init_renderer();
-
-    decoder_thread = std::thread(&Renderer::decoder_thread_function, this);
-
-    MSG message = {};
-    while (GetMessageW(&message, NULL, 0, 0) > 0) {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
-    }
-}
-
-void Renderer::render_frame() {
+void Renderer::render() {
     std::println("Rendering frame");
 
     hresult(graphics_command_list->Reset(command_allocator.Get(), pipeline_state.Get()));
@@ -322,9 +229,9 @@ void Renderer::render_frame() {
     graphics_command_list->SetGraphicsRootShaderResourceView(0, packed_texture->GetGPUVirtualAddress());
     assert(vertex_buffer_view.SizeInBytes == (sizeof(Vertex) * 6));
     graphics_command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
-    graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder.video_width, 0);
-    graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder.video_height, 1);
-    std::println("Dimensions set: {}, {}", decoder.video_width, decoder.video_height);
+    graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder_->width, 0);
+    graphics_command_list->SetGraphicsRoot32BitConstant(1, decoder_->height, 1);
+    std::println("Dimensions set: {}, {}", decoder_->width, decoder_->height);
     graphics_command_list->DrawInstanced(6, 1, 0, 0);
 
     {
@@ -359,5 +266,39 @@ void Renderer::wait_for_previous_frame() {
     if (fence->GetCompletedValue() < current_fence_value) {
         hresult(fence->SetEventOnCompletion(current_fence_value, fence_event));
         WaitForSingleObject(fence_event, INFINITE);
+    }
+}
+
+void Renderer::update() {
+    std::unique_lock lock(window_->dimensions_mutex);
+    bool dimensions_changed = (window_->width != width) || (window_->height != height);
+    bool dimensions_valid = (window_->width > 0) && (window_->height > 0);
+    if (dimensions_changed && dimensions_valid) {
+        width = window_->width;
+        height = window_->height;
+        viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)width, (float)height);
+        scissor = { 0, 0, (long)width, (long)height };
+
+        for (auto &backbuffer : backbuffers) {
+            backbuffer = nullptr;
+        }
+
+        hresult(swap_chain->ResizeBuffers(frame_count, width, height, swap_chain_format, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING));
+        create_backbuffers();
+    }
+}
+
+void Renderer::render_loop() {
+    while (!window_->started_shutting_down) {
+        update();
+        render();
+    }
+}
+
+void Renderer::create_backbuffers() {
+    for (unsigned i = 0; i < frame_count; i++) {
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(rtv_heap->GetCPUDescriptorHandleForHeapStart(), i, rtv_descriptor_size);
+        hresult(swap_chain->GetBuffer(i, IID_PPV_ARGS(&backbuffers[i])));
+        device->CreateRenderTargetView(backbuffers[i].Get(), nullptr, rtv_handle);
     }
 }

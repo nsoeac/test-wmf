@@ -1,9 +1,7 @@
 #pragma once
 
-#include "networking.hpp"
-
 struct Decoder {
-    struct Renderer *renderer = nullptr;
+    struct Renderer *renderer_ = nullptr;
 
     struct Frame_Header {
         int32_t frame_index;
@@ -16,22 +14,20 @@ struct Decoder {
     MFT_OUTPUT_STREAM_INFO output_stream_info = {};
     MFT_OUTPUT_DATA_BUFFER data_buffer = {};
 
-    uint32_t video_width = (uint32_t)-1;
-    uint32_t video_height = (uint32_t)-1;
-    int video_framerate = -1;
+    unsigned width;
+    unsigned height;
+    unsigned framerate;
     int64_t start_timestamp = INT64_MIN;
     int64_t sample_duration = INT64_MIN;
     bool has_parameter_sets = false;
 
+    std::thread thread;
+
     Microsoft::WRL::ComPtr<IMFMediaBuffer> media_buffer;
     Microsoft::WRL::ComPtr<IMFSample> output_sample;
 
-    Networking net;
-    Decoder(Config &config, struct Renderer *renderer);
-    void connect();
-    void init_decoder();
-    void handle_packets();
-    void handle_packet();
+    void start(unsigned video_width, unsigned video_height, unsigned video_framerate, struct Renderer* renderer);
+    void init();
     void create_texture();
     void process_sample(Microsoft::WRL::ComPtr<IMFSample> sample);
     void process_frame(std::vector<uint8_t> &frame);
