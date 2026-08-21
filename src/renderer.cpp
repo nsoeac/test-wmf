@@ -285,6 +285,8 @@ void Renderer::update() {
 
         hresult(swap_chain->ResizeBuffers(frame_count, width, height, swap_chain_format, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING));
         create_backbuffers();
+
+        frame_index = swap_chain->GetCurrentBackBufferIndex();
     }
 }
 
