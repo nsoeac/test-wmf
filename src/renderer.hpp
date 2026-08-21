@@ -5,6 +5,57 @@ struct Vertex {
     float y;
 };
 
+// When the producer wants to update a buffer, it must check that the producer and consumer indices are the same.
+// If they are, the producer has to wait until the consumer has changed its index and signalled the condition variable.
+// When the producer is updating a buffer, it must recreate it when its `version` is less than `current_version`.
+struct Double_Buffer {
+    struct Buffer {
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+        int version = -1;
+    };
+
+    int latest_version = -1;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> &consumer_resource() {
+        return buffers[consumer_index].resource;
+    }
+
+    void update_consumer_index() {
+        if (consumer_index == producer_index) {
+            consumer_index = 1 - consumer_index;
+        }
+
+        condition_variable.notify_all();
+    }
+
+    Buffer &producer_buffer() {
+        wait_for_producer_buffer();
+        return buffers[producer_index];
+    }
+
+    bool is_valid() const {
+        return buffers[consumer_index].version >= 0;
+    }
+
+    void update_producer_index() {
+        producer_index = 1 - producer_index;
+    }
+private:
+    std::array<Buffer, 2> buffers;
+    int producer_index = 1;
+    int consumer_index = 0;
+
+    std::mutex mutex;
+    std::condition_variable condition_variable;
+
+    void wait_for_producer_buffer() {
+        if (producer_index == consumer_index) {
+            std::unique_lock lock(mutex);
+            condition_variable.wait(lock, [this]() { return consumer_index != producer_index; });
+        }
+    }
+};
+
 struct Renderer {
     struct Decoder *decoder_ = nullptr;
     struct Window *window_ = nullptr;
@@ -13,7 +64,6 @@ struct Renderer {
     unsigned width = 1280;
     unsigned height = 720;
     bool shutting_down = false;
-    bool packed_texture_is_valid = false;
 
     Microsoft::WRL::ComPtr<ID3D12Device> device;
     Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain;
@@ -25,7 +75,7 @@ struct Renderer {
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline_state;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
     Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> packed_texture;
+    Double_Buffer packed_texture;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, frame_count> backbuffers;
     D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view = {};
     HANDLE fence_event = NULL;
@@ -33,11 +83,6 @@ struct Renderer {
     D3D12_VIEWPORT viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)width, (float)height);
     D3D12_RECT scissor = { 0, 0, (long)width, (long)height };
     static const DXGI_FORMAT swap_chain_format = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-    // These resources protect the texture from being destroyed while the renderer is rendering.
-
-    std::mutex mutex;
-    std::condition_variable condition_variable;
 
     std::thread thread;
 
@@ -52,6 +97,7 @@ struct Renderer {
     void create_packed_texture(uint32_t buffer_size);
     void update_packed_texture(std::span<const uint8_t> data);
 private:
+    void create_producer_buffer(Double_Buffer::Buffer &producer_buffer, uint32_t buffer_size);
     void create_backbuffers();
     void update();
     void render_loop();

@@ -185,8 +185,6 @@ void Connection::receive() {
             message_buffer_option = add_packet(std::move(packet));
         }
 
-        std::println("Message completed");
-
         {
             std::unique_lock lock(mutex);
             buffers.push_back(std::move(*message_buffer_option));
