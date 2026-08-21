@@ -95,7 +95,6 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
 
         switch (result) {
         case MF_E_TRANSFORM_NEED_MORE_INPUT:
-            std::println("Input drained");
             goto FINISHED;
         case MF_E_TRANSFORM_STREAM_CHANGE: {
             std::println("Handling stream change");
@@ -186,8 +185,6 @@ void Decoder::process_frame(std::vector<uint8_t> &frame) {
     int64_t sample_time = get_sample_time(start_timestamp, header.timestamp);
     ComPtr<IMFSample> sample = create_sample(payload.size(), sample_time, sample_duration);
     copy_payload_to_first_buffer(sample, payload);
-
-    std::println("Adding video sample with timestamp {}", sample_time);
 
     process_sample(sample);
 

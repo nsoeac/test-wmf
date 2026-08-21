@@ -195,7 +195,13 @@ void Renderer::start(HWND window_handle, Decoder *decoder, Window *window) {
 }
 
 void Renderer::update_packed_texture(std::span<const uint8_t> buffer) {
+    std::println("Waiting to update packed texture");
+    auto now = std::chrono::high_resolution_clock::now();
     std::unique_lock lock(mutex);
+    auto duration = std::chrono::high_resolution_clock::now() - now;
+    if (duration >= std::chrono::seconds(1)) {
+        abort();
+    }
 
     D3D12_RANGE read_range = {};
 
@@ -223,6 +229,7 @@ void Renderer::create_packed_texture(uint32_t buffer_size) {
 }
 
 void Renderer::render() {
+    std::println("Rendering frame");
     hresult(graphics_command_list->Reset(command_allocator.Get(), pipeline_state.Get()));
 
     {
