@@ -203,6 +203,8 @@ void Renderer::update_packed_texture(std::span<const uint8_t> buffer) {
         abort();
     }
 
+    std::println("Updating packed texture");
+
     D3D12_RANGE read_range = {};
 
     void *buffer_data = nullptr;
@@ -229,7 +231,6 @@ void Renderer::create_packed_texture(uint32_t buffer_size) {
 }
 
 void Renderer::render() {
-    std::println("Rendering frame");
     hresult(graphics_command_list->Reset(command_allocator.Get(), pipeline_state.Get()));
 
     {
@@ -326,8 +327,12 @@ void Renderer::render_loop() {
     while (!window_->started_shutting_down) {
         update();
 
-        std::unique_lock lock(mutex);
-        render();
+        {
+            std::unique_lock lock(mutex);
+            render();
+        }
+
+        std::this_thread::yield();
     }
 }
 

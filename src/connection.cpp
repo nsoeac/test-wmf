@@ -185,33 +185,7 @@ void Connection::receive() {
             message_buffer_option = add_packet(std::move(packet));
         }
 
-        {
-            std::unique_lock lock(mutex);
-            buffers.push_back(std::move(*message_buffer_option));
-        }
-
-        condition_variable.notify_all();
-    }
-    while (true) {
-        std::optional<std::vector<uint8_t>> message_buffer_option = std::nullopt;
-
-        while (message_buffer_option == std::nullopt) {
-            Packet packet;
-            WSABUF packet_wsabuf = get_wsabuf(packet.buffer);
-
-            DWORD flags = 0;
-            DWORD bytes_received = 0;
-            if (WSARecv(socket, &packet_wsabuf, 1, &bytes_received, &flags, NULL, NULL) != 0) {
-                THROW_WSA(WSARecv);
-            }
-
-            if (print_debug_strings) {
-                std::println("Received {} byte(s) from server ({} messages remain)", bytes_received, messages.size());
-            }
-
-            packet.buffer.resize(bytes_received);
-            message_buffer_option = add_packet(std::move(packet));
-        }
+        std::println("Message completed");
 
         {
             std::unique_lock lock(mutex);

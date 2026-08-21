@@ -30,6 +30,8 @@ struct App {
                 std::unique_lock lock(connection.mutex);
                 connection.condition_variable.wait(lock, [this]() { return !connection.buffers.empty(); });
                 std::swap(connection.buffers, working_buffers);
+
+                std::println("Processing messages");
             }
 
             for (std::vector<uint8_t> &buffer : working_buffers) {
@@ -37,6 +39,8 @@ struct App {
             }
 
             working_buffers.clear();
+
+            std::println("Finished processing messages");
         }
     }
 };
