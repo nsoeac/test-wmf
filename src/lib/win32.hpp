@@ -10,14 +10,25 @@ Microsoft::WRL::ComPtr<ID3DBlob> load_shader(std::string_view filepath);
 
 HANDLE get_module_handle();
 
-#define THROW_WIN32(function)                                                                                                            \
-    do {                                                                                                                                 \
-        DWORD error_code = GetLastError();                                                                                               \
-        throw std::runtime_error(std::format(#function " failed with error {}: {}", error_code, get_win32_error_from_code(error_code))); \
+#define THROW_WIN32(function)                                                                                                      \
+    do {                                                                                                                           \
+        DWORD error_code = GetLastError();                                                                                         \
+        std::string error = std::format(#function " failed with error {}: {}", error_code, get_win32_error_from_code(error_code)); \
+        std::println("{}", error);                                                                                                 \
+        throw std::runtime_error(error);                                                                                           \
     } while (false)
 
-#define THROW_WSA(function)                                                                                                              \
-    do {                                                                                                                                 \
-        int error_code = WSAGetLastError();                                                                                              \
-        throw std::runtime_error(std::format(#function " failed with error {}: {}", error_code, get_win32_error_from_code(error_code))); \
+#define THROW_WSA(function)                                                                                                        \
+    do {                                                                                                                           \
+        int error_code = WSAGetLastError();                                                                                        \
+        std::string error = std::format(#function " failed with error {}: {}", error_code, get_win32_error_from_code(error_code)); \
+        std::println("{}", error);                                                                                                 \
+        throw std::runtime_error(error);                                                                                           \
+    } while (false)
+
+#define THROW_WSA_CODE(function, error_code)                                                                                       \
+    do {                                                                                                                           \
+        std::string error = std::format(#function " failed with error {}: {}", (error_code), get_win32_error_from_code(error_code)); \
+        std::println("{}", error);                                                                                                 \
+        throw std::runtime_error(error);                                                                                           \
     } while (false)

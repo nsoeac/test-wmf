@@ -89,9 +89,39 @@ Connection::Connection(Config &config) :
     port(config.port) {
     wsa_send_buffer.buf = (CHAR *)send_buffer.data();
     wsa_send_buffer.len = (ULONG)send_buffer.size();
+
+    packet_received_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (packet_received_event == NULL) {
+        THROW_WIN32(CreateEventW);
+    }
 }
 
-std::vector<uint8_t> Connection::get_initial_message() {
+bool Connection::wait_for_packet(OVERLAPPED *overlapped, DWORD *bytes_transferred, DWORD *flags) {
+    DWORD wait_result = WaitForMultipleObjects((DWORD)events.size(), events.data(), FALSE, INFINITE);
+    bool wait_succeeded = (wait_result >= WAIT_OBJECT_0) && (wait_result < (WAIT_OBJECT_0 + (DWORD)events.size()));
+    bool abandoned = (wait_result >= WAIT_ABANDONED_0) && (wait_result < (WAIT_ABANDONED_0 + (DWORD)events.size()));
+    assert(!abandoned);
+    if (wait_succeeded) {
+        DWORD event_index = wait_result - WAIT_OBJECT_0;
+        bool succeeded = event_index == packet_received_event_index;
+        if (succeeded) {
+            if (WSAGetOverlappedResult(socket, overlapped, bytes_transferred, FALSE, flags) == FALSE) {
+                THROW_WSA(WSAGetOverlappedResult);
+            }
+
+            return true;
+        } else {
+            return false;
+        }
+    } else {
+        THROW_WIN32(WaitForMultipleObjects);
+    }
+}
+
+std::optional<std::vector<uint8_t>> Connection::get_initial_message(HANDLE shutdown_event) {
+    shutdown_event_ = shutdown_event;
+    events = { packet_received_event, shutdown_event_ };
+
     if (print_debug_strings) {
         std::println("Resolving server address");
     }
@@ -105,7 +135,7 @@ std::vector<uint8_t> Connection::get_initial_message() {
         THROW_WSA(GetAddrInfoW);
     }
 
-    socket = WSASocketW(hints.ai_family, hints.ai_socktype, hints.ai_protocol, NULL, 0, 0);
+    socket = WSASocketW(hints.ai_family, hints.ai_socktype, hints.ai_protocol, NULL, 0, WSA_FLAG_OVERLAPPED);
     if (socket == INVALID_SOCKET) {
         THROW_WSA(WSASocketW);
     }
@@ -130,20 +160,27 @@ std::vector<uint8_t> Connection::get_initial_message() {
     INT server_address_length = sizeof(server_address);
     DWORD receive_flags = 0;
     std::vector<uint8_t> receive_buffer(packet_size);
-    DWORD bytes_received = 0;
     WSABUF wsa_receive_buffer = get_wsabuf(receive_buffer);
-    if (WSARecvFrom(socket, &wsa_receive_buffer, 1, &bytes_received, &receive_flags, &server_address, &server_address_length, NULL, NULL) != 0) {
-        THROW_WSA(WSARecvFrom);
+    OVERLAPPED overlapped = { .hEvent = packet_received_event };
+    int receive_result = WSARecvFrom(socket, &wsa_receive_buffer, 1, NULL, &receive_flags, &server_address, &server_address_length, &overlapped, NULL);
+    if (receive_result != 0) {
+        int last_error = WSAGetLastError();
+        if (last_error != WSA_IO_PENDING) {
+            THROW_WSA_CODE(WSARecvFrom, last_error);
+        }
     }
 
-    if (bytes_received < 4) {
-        throw std::runtime_error("Expected 4 bytes for the server receive port");
+    DWORD bytes_received = 0;
+    if (!wait_for_packet(&overlapped, &bytes_received, &receive_flags)) {
+        std::println("Shutting down while getting initial packet");
+        return std::nullopt;
     }
 
-    std::vector<uint8_t> initial_message = { receive_buffer.begin(), receive_buffer.begin() + bytes_received };
+    assert(bytes_received >= (sizeof(int32_t) * 4));
 
-    assert(initial_message.size() >= (sizeof(int32_t) * 4));
-    std::span<int32_t> initial_values = { (int32_t *)(initial_message.data()), (int32_t *)(initial_message.data() + sizeof(int32_t) * 4) };
+    std::vector<uint8_t> initial_message;
+    initial_message.assign_range(std::span(receive_buffer.begin(), bytes_received));
+    std::span<int32_t> initial_values = { (int32_t *)(receive_buffer.data()), 4 };
 
     uint16_t server_port = (uint16_t)initial_values[0];
     if (server_port == 0) {
@@ -172,9 +209,19 @@ void Connection::receive() {
             WSABUF packet_wsabuf = get_wsabuf(packet.buffer);
 
             DWORD flags = 0;
+            OVERLAPPED overlapped = { .hEvent = packet_received_event };
+            int receive_result = WSARecv(socket, &packet_wsabuf, 1, NULL, &flags, &overlapped, NULL);
+            if (receive_result != 0) {
+                int last_error = WSAGetLastError();
+                if (last_error != WSA_IO_PENDING) {
+                    THROW_WSA_CODE(WSARecvFrom, last_error);
+                }
+            }
+
             DWORD bytes_received = 0;
-            if (WSARecv(socket, &packet_wsabuf, 1, &bytes_received, &flags, NULL, NULL) != 0) {
-                THROW_WSA(WSARecv);
+            if (!wait_for_packet(&overlapped, &bytes_received, &flags)) {
+                std::println("Shutting down while getting message");
+                goto SHUTDOWN;
             }
 
             if (print_debug_strings) {
@@ -192,6 +239,9 @@ void Connection::receive() {
 
         condition_variable.notify_all();
     }
+
+SHUTDOWN:
+    condition_variable.notify_all(); // Because the main thread can block on the mutex.
 }
 
 void Connection::ready() {
@@ -207,7 +257,7 @@ void Connection::ready() {
 
     ready_packet_sent = true;
 
-    receive_thread = std::thread(&Connection::receive, this);
+    thread = std::thread(&Connection::receive, this);
 }
 
 WSABUF Connection::get_wsabuf(std::span<uint8_t> span) {

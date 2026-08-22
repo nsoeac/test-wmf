@@ -6,7 +6,11 @@ Window::Window(unsigned width, unsigned height, std::string class_name, std::str
     width(width),
     height(height),
     class_name(convert(class_name)),
-    window_name(convert(window_name)) {
+    window_name(convert(window_name)) {}
+
+void Window::init(HANDLE shutdown_event) {
+    shutdown_event_ = shutdown_event;
+
     std::unique_lock lock(initialised_mutex);
 
     thread = std::thread(&Window::initialise_window, this);
@@ -83,15 +87,24 @@ LRESULT Window::window_procedure(HWND handle, UINT message, WPARAM w_param, LPAR
     }
 }
 
+void Window::shutdown() {
+    started_shutting_down = true;
+
+    if (SetEvent(shutdown_event_) == 0) {
+        THROW_WIN32(SetEvent);
+    }
+
+    std::unique_lock lock(shutting_down_mutex);
+
+    if (!can_finish_shutting_down) {
+        shutting_down_condition_variable.wait(lock, [this]() { return can_finish_shutting_down; });
+    }
+}
+
 LRESULT Window::handle_message(UINT message, WPARAM w_param, LPARAM l_param) {
     switch (message) {
     case WM_CLOSE: {
-        std::unique_lock lock(shutting_down_mutex);
-
-        started_shutting_down = true;
-
-        shutting_down_condition_variable.wait(lock, [this]() { return can_finish_shutting_down; });
-
+        shutdown();
         DestroyWindow(handle);
         break;
     }

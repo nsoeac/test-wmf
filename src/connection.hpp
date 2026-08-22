@@ -29,6 +29,10 @@ struct Connection {
     };
 
     SOCKET socket = INVALID_SOCKET;
+    HANDLE shutdown_event_ = NULL;
+    HANDLE packet_received_event = NULL;
+    static constexpr DWORD packet_received_event_index = 0;
+    std::array<HANDLE, 2> events = { NULL, NULL };
 
     std::vector<uint8_t> send_buffer = std::vector<uint8_t>(packet_size);
     WSABUF wsa_send_buffer = {};
@@ -48,10 +52,11 @@ struct Connection {
     [[nodiscard]] std::optional<std::vector<uint8_t>> add_packet(Packet &&packet); // Returns message buffer if it completes a message.
 
     Connection(Config &config);
-    std::vector<uint8_t> get_initial_message();
+    std::optional<std::vector<uint8_t>> get_initial_message(HANDLE shutdown_event);
     void ready();
 
-    std::thread receive_thread;
+    std::thread thread;
     void receive();
     static WSABUF get_wsabuf(std::span<uint8_t> span);
+    [[nodiscard]] bool wait_for_packet(OVERLAPPED *overlapped, DWORD *bytes_transferred, DWORD *flags);
 };

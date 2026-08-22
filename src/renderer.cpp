@@ -335,6 +335,8 @@ void Renderer::render_loop() {
         update();
         render();
     }
+
+    std::println("Shutting renderer down");
 }
 
 void Renderer::create_backbuffers() {
