@@ -236,6 +236,7 @@ void Renderer::create_packed_texture(uint32_t buffer_size) {
 }
 
 void Renderer::render() {
+    hresult(command_allocator->Reset());
     hresult(graphics_command_list->Reset(command_allocator.Get(), pipeline_state.Get()));
 
     {
