@@ -13,6 +13,7 @@ struct Decoder {
     MFT_INPUT_STREAM_INFO input_stream_info = {};
     MFT_OUTPUT_STREAM_INFO output_stream_info = {};
     MFT_OUTPUT_DATA_BUFFER data_buffer = {};
+    static constexpr bool print_debug_strings = false;
 
     unsigned width;
     unsigned height;

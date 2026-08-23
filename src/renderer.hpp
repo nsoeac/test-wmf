@@ -9,6 +9,8 @@ struct Vertex {
 // If they are, the producer has to wait until the consumer has changed its index and signalled the condition variable.
 // When the producer is updating a buffer, it must recreate it when its `version` is less than `current_version`.
 struct Double_Buffer {
+    static constexpr bool print_debug_strings = false;
+
     struct Buffer {
         Microsoft::WRL::ComPtr<ID3D12Resource> resource;
         int version = -1;
@@ -23,7 +25,10 @@ struct Double_Buffer {
     void update_consumer_index() {
         if (consumer_index == producer_index) {
             consumer_index = 1 - consumer_index;
-            std::println("Consumer index is now {}", consumer_index);
+
+            if (print_debug_strings) {
+                std::println("Consumer index is now {}", consumer_index);
+            }
         }
 
         condition_variable.notify_all();
@@ -40,7 +45,10 @@ struct Double_Buffer {
 
     void update_producer_index() {
         producer_index = 1 - producer_index;
-        std::println("Producer index is now {}", producer_index);
+
+        if (print_debug_strings) {
+            std::println("Producer index is now {}", producer_index);
+        }
     }
 private:
     std::array<Buffer, 2> buffers;

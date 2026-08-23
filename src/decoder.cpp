@@ -97,7 +97,9 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
         case MF_E_TRANSFORM_NEED_MORE_INPUT:
             goto FINISHED;
         case MF_E_TRANSFORM_STREAM_CHANGE: {
-            std::println("Handling stream change");
+            if (print_debug_strings) {
+                std::println("Handling stream change");
+            }
 
             assert(status & MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS);
             status &= ~MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS;
@@ -119,12 +121,16 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
 
             create_texture();
 
-            std::println("Stream change handled");
+            if (print_debug_strings) {
+                std::println("Stream change handled");
+            }
 
             continue;
         }
         case S_OK: {
-            std::println("Sample processed; updating packed texture");
+            if (print_debug_strings) {
+                std::println("Sample processed; updating packed texture");
+            }
 
             BYTE *media_data = nullptr;
             DWORD current_length = 0;
@@ -156,7 +162,9 @@ void Decoder::process_frame(std::vector<uint8_t> &frame) {
     std::memcpy(&header, frame.data(), sizeof(Frame_Header));
     std::span<uint8_t> payload = { frame.begin() + sizeof(Frame_Header), frame.end() };
 
-    std::println("Processing frame {} ({} byte(s))", header.frame_index, payload.size());
+    if (print_debug_strings) {
+        std::println("Processing frame {} ({} byte(s))", header.frame_index, payload.size());
+    }
 
     if (is_parameter_sets(payload)) {
         ComPtr<IMFSample> parameter_sets_sample;

@@ -41,6 +41,10 @@ bool Connection::Message::is_complete() const {
         copy_destination += packet_payload.size();
     }
 
+    if (print_message_debug_strings) {
+        std::println("Message {} ({} bytes) is complete; {} messages remain", message.message_index, message_payload.size(), messages.size() - 1);
+    }
+
     // Remove the message.
 
     std::swap(message, messages.back());
@@ -122,7 +126,7 @@ std::optional<std::vector<uint8_t>> Connection::get_initial_message(HANDLE shutd
     shutdown_event_ = shutdown_event;
     events = { packet_received_event, shutdown_event_ };
 
-    if (print_debug_strings) {
+    if (print_packet_debug_strings) {
         std::println("Resolving server address");
     }
 
@@ -144,7 +148,7 @@ std::optional<std::vector<uint8_t>> Connection::get_initial_message(HANDLE shutd
         THROW_WSA(WSAConnect);
     }
 
-    if (print_debug_strings) {
+    if (print_packet_debug_strings) {
         std::println("Greeting server");
     }
 
@@ -152,7 +156,7 @@ std::optional<std::vector<uint8_t>> Connection::get_initial_message(HANDLE shutd
         THROW_WSA(WSASend);
     }
 
-    if (print_debug_strings) {
+    if (print_packet_debug_strings) {
         std::println("Waiting for server response");
     }
 
@@ -189,7 +193,7 @@ std::optional<std::vector<uint8_t>> Connection::get_initial_message(HANDLE shutd
 
     ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
 
-    if (print_debug_strings) {
+    if (print_packet_debug_strings) {
         std::println("Received {} bytes; server port is {}", bytes_received, server_port);
     }
 
@@ -224,7 +228,7 @@ void Connection::receive() {
                 goto SHUTDOWN;
             }
 
-            if (print_debug_strings) {
+            if (print_packet_debug_strings) {
                 std::println("Received {} byte(s) from server ({} messages remain)", bytes_received, messages.size());
             }
 
@@ -247,7 +251,7 @@ SHUTDOWN:
 void Connection::ready() {
     assert(!ready_packet_sent);
 
-    if (print_debug_strings) {
+    if (print_packet_debug_strings) {
         std::println("Sending 'ready' packet to server");
     }
 
