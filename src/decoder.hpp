@@ -23,15 +23,17 @@ struct Decoder {
     bool has_parameter_sets = false;
 
     std::thread thread;
+    std::vector<std::vector<uint8_t>> pre_parameter_set_frames;
+    void process_pre_parameter_set_frames();
 
     Microsoft::WRL::ComPtr<IMFMediaBuffer> media_buffer;
     Microsoft::WRL::ComPtr<IMFSample> output_sample;
 
-    void start(unsigned video_width, unsigned video_height, unsigned video_framerate, struct Renderer* renderer);
+    void start(unsigned video_width, unsigned video_height, unsigned video_framerate, struct Renderer *renderer);
     void init();
     void create_texture();
     void process_sample(Microsoft::WRL::ComPtr<IMFSample> sample);
-    void process_frame(std::vector<uint8_t> &frame);
+    void process_frame(std::vector<uint8_t> &&frame);
     static bool is_parameter_sets(std::span<uint8_t> buffer);
     static Microsoft::WRL::ComPtr<IMFSample> create_sample(size_t size, int64_t sample_time, int64_t sample_duration);
     static void copy_payload_to_first_buffer(Microsoft::WRL::ComPtr<IMFSample> sample, std::span<uint8_t> payload);

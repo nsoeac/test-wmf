@@ -40,8 +40,8 @@ App::App(Config &config) : connection(config) {
                 std::swap(connection.buffers, working_buffers);
             }
 
-            for (std::vector<uint8_t> &buffer : working_buffers) {
-                decoder.process_frame(buffer);
+            for (size_t i = 0; i < working_buffers.size(); i++) {
+                decoder.process_frame(std::move(working_buffers[i]));
             }
 
             working_buffers.clear();

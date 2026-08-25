@@ -156,7 +156,15 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
 FINISHED:;
 }
 
-void Decoder::process_frame(std::vector<uint8_t> &frame) {
+void Decoder::process_pre_parameter_set_frames() {
+    for (size_t i = 0; i < pre_parameter_set_frames.size(); i++) {
+        process_frame(std::move(pre_parameter_set_frames[i]));
+    }
+
+    pre_parameter_set_frames.clear();
+}
+
+void Decoder::process_frame(std::vector<uint8_t> &&frame) {
     Frame_Header header = {};
     assert(frame.size() >= sizeof(Frame_Header));
     std::memcpy(&header, frame.data(), sizeof(Frame_Header));
@@ -167,6 +175,8 @@ void Decoder::process_frame(std::vector<uint8_t> &frame) {
     }
 
     if (is_parameter_sets(payload)) {
+        process_pre_parameter_set_frames();
+
         ComPtr<IMFSample> parameter_sets_sample;
 
         if (start_timestamp == INT64_MIN) {
@@ -185,9 +195,8 @@ void Decoder::process_frame(std::vector<uint8_t> &frame) {
     }
 
     if (!has_parameter_sets) {
-        std::println("Can't process video frame without parameter sets");
-
-        abort();
+        pre_parameter_set_frames.push_back(std::move(frame));
+        return;
     }
 
     int64_t sample_time = get_sample_time(start_timestamp, header.timestamp);
