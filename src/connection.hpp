@@ -1,7 +1,5 @@
 #pragma once
 
-#include "config.hpp"
-
 struct Connection {
     struct Header {
         int64_t message_index;
@@ -52,7 +50,7 @@ struct Connection {
     [[nodiscard]] std::vector<uint8_t> remove_message_and_get_payload(Message &message);
     [[nodiscard]] std::optional<std::vector<uint8_t>> add_packet(Packet &&packet); // Returns message buffer if it completes a message.
 
-    Connection(Config &config);
+    Connection(std::wstring address, std::wstring port);
     std::optional<std::vector<uint8_t>> get_initial_message(HANDLE shutdown_event);
     void ready();
 

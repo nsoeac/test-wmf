@@ -88,9 +88,9 @@ bool Connection::Message::is_complete() const {
     }
 }
 
-Connection::Connection(Config &config) :
-    address(config.address),
-    port(config.port) {
+Connection::Connection(std::wstring address, std::wstring port) :
+    address(address),
+    port(port) {
     wsa_send_buffer.buf = (CHAR *)send_buffer.data();
     wsa_send_buffer.len = (ULONG)send_buffer.size();
 
