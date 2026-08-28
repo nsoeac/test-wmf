@@ -255,7 +255,8 @@ void Connection::thread_function() {
         std::println("Greeting server");
     }
 
-    if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
+    WSABUF empty_wsabuf = {};
+    if (WSASend(socket, &empty_wsabuf, 1, &bytes_sent, 0, NULL, NULL) != 0) {
         THROW_WSA(WSASend);
     }
 
