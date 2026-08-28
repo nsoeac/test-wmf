@@ -2,7 +2,7 @@
 
 #include "lib/lib.hpp"
 
-App::App(Config &config) : connection(config) {
+App::App(Config &config) {
     shutdown_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (shutdown_event == NULL) {
         THROW_WIN32(CreateEventW);
@@ -10,7 +10,15 @@ App::App(Config &config) : connection(config) {
 
     window.init(shutdown_event);
 
-    std::optional<std::vector<uint8_t>> initial_message = connection.get_initial_message(shutdown_event);
+    {
+        Connection::Settings connection_settings;
+        connection_settings.address = config.address;
+        connection_settings.port = config.port;
+        connection_settings.shutdown_event = shutdown_event;
+        connection.initialise(connection_settings);
+    }
+
+    std::optional<std::vector<uint8_t>> initial_message = connection.get_message();
 
     if (!initial_message) {
         goto BEGIN_SHUTDOWN;
@@ -24,8 +32,6 @@ App::App(Config &config) : connection(config) {
 
         renderer.start(window.handle, &decoder, &window);
         decoder.start(video_width, video_height, video_framerate, &renderer);
-
-        connection.ready();
 
         std::vector<std::vector<uint8_t>> working_buffers;
         while (!window.started_shutting_down) {

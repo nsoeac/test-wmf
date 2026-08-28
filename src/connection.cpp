@@ -88,9 +88,7 @@ bool Connection::Message::is_complete() const {
     }
 }
 
-Connection::Connection(std::wstring address, std::wstring port) :
-    address(address),
-    port(port) {
+Connection::Connection() {
     wsa_send_buffer.buf = (CHAR *)send_buffer.data();
     wsa_send_buffer.len = (ULONG)send_buffer.size();
 
@@ -100,20 +98,26 @@ Connection::Connection(std::wstring address, std::wstring port) :
     }
 }
 
-bool Connection::wait_for_packet(OVERLAPPED *overlapped, DWORD *bytes_transferred, DWORD *flags) {
+bool Connection::wait_for_packet(Receive_Resources &resources) {
     DWORD wait_result = WaitForMultipleObjects((DWORD)events.size(), events.data(), FALSE, INFINITE);
     bool wait_succeeded = (wait_result >= WAIT_OBJECT_0) && (wait_result < (WAIT_OBJECT_0 + (DWORD)events.size()));
     bool abandoned = (wait_result >= WAIT_ABANDONED_0) && (wait_result < (WAIT_ABANDONED_0 + (DWORD)events.size()));
     assert(!abandoned);
     if (wait_succeeded) {
         DWORD event_index = wait_result - WAIT_OBJECT_0;
-        bool succeeded = event_index == packet_received_event_index;
-        if (succeeded) {
-            if (WSAGetOverlappedResult(socket, overlapped, bytes_transferred, FALSE, flags) == FALSE) {
+
+        assert((event_index == packet_received_event_index) || (event_index == shutdown_event_index));
+
+        if (event_index == packet_received_event_index) {
+            if (WSAGetOverlappedResult(socket, &resources.overlapped, &resources.bytes_received, FALSE, &resources.flags) == FALSE) {
                 THROW_WSA(WSAGetOverlappedResult);
             }
 
             return true;
+        } else if (event_index == shutdown_event_index) {
+            std::scoped_lock lock(mutex);
+            shutting_down = true;
+            return false;
         } else {
             return false;
         }
@@ -122,99 +126,14 @@ bool Connection::wait_for_packet(OVERLAPPED *overlapped, DWORD *bytes_transferre
     }
 }
 
-std::optional<std::vector<uint8_t>> Connection::get_initial_message(HANDLE shutdown_event) {
-    shutdown_event_ = shutdown_event;
-    events = { packet_received_event, shutdown_event_ };
-
-    if (print_packet_debug_strings) {
-        std::println("Resolving server address");
-    }
-
-    ADDRINFOW hints = {};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_protocol = IPPROTO_UDP;
-    PADDRINFOW send_info = NULL;
-    if (GetAddrInfoW(address.data(), port.data(), &hints, &send_info) != 0) {
-        THROW_WSA(GetAddrInfoW);
-    }
-
-    socket = WSASocketW(hints.ai_family, hints.ai_socktype, hints.ai_protocol, NULL, 0, WSA_FLAG_OVERLAPPED);
-    if (socket == INVALID_SOCKET) {
-        THROW_WSA(WSASocketW);
-    }
-
-    if (WSAConnect(socket, send_info->ai_addr, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
-        THROW_WSA(WSAConnect);
-    }
-
-    if (print_packet_debug_strings) {
-        std::println("Greeting server");
-    }
-
-    if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
-        THROW_WSA(WSASend);
-    }
-
-    if (print_packet_debug_strings) {
-        std::println("Waiting for server response");
-    }
-
-    sockaddr server_address = {};
-    INT server_address_length = sizeof(server_address);
-    DWORD receive_flags = 0;
-    std::vector<uint8_t> receive_buffer(packet_size);
-    WSABUF wsa_receive_buffer = get_wsabuf(receive_buffer);
-    OVERLAPPED overlapped = { .hEvent = packet_received_event };
-    int receive_result = WSARecvFrom(socket, &wsa_receive_buffer, 1, NULL, &receive_flags, &server_address, &server_address_length, &overlapped, NULL);
-    if (receive_result != 0) {
-        int last_error = WSAGetLastError();
-        if (last_error != WSA_IO_PENDING) {
-            THROW_WSA_CODE(WSARecvFrom, last_error);
-        }
-    }
-
-    DWORD bytes_received = 0;
-    if (!wait_for_packet(&overlapped, &bytes_received, &receive_flags)) {
-        std::println("Shutting down while getting initial packet");
-        return std::nullopt;
-    }
-
-    assert(bytes_received >= (sizeof(int32_t) * 4));
-
-    std::vector<uint8_t> initial_message;
-    initial_message.assign_range(std::span(receive_buffer.begin(), bytes_received));
-    std::span<int32_t> initial_values = { (int32_t *)(receive_buffer.data()), 4 };
-
-    uint16_t server_port = (uint16_t)initial_values[0];
-    if (server_port == 0) {
-        throw std::runtime_error(std::format("Server receive port is {}", server_port));
-    }
-
-    ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
-
-    if (print_packet_debug_strings) {
-        std::println("Received {} bytes; server port is {}", bytes_received, server_port);
-    }
-
-    if (WSAConnect(socket, &server_address, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
-        THROW_WSA(WSAConnect);
-    }
-
-    return initial_message;
-}
-
 void Connection::receive() {
     while (true) {
         std::optional<std::vector<uint8_t>> message_buffer_option = std::nullopt;
 
         while (message_buffer_option == std::nullopt) {
+            Receive_Resources resources = get_receive_resources();
             Packet packet;
-            WSABUF packet_wsabuf = get_wsabuf(packet.buffer);
-
-            DWORD flags = 0;
-            OVERLAPPED overlapped = { .hEvent = packet_received_event };
-            int receive_result = WSARecv(socket, &packet_wsabuf, 1, NULL, &flags, &overlapped, NULL);
+            int receive_result = WSARecv(socket, &resources.wsabuf, 1, NULL, &resources.flags, &resources.overlapped, NULL);
             if (receive_result != 0) {
                 int last_error = WSAGetLastError();
                 if (last_error != WSA_IO_PENDING) {
@@ -222,17 +141,16 @@ void Connection::receive() {
                 }
             }
 
-            DWORD bytes_received = 0;
-            if (!wait_for_packet(&overlapped, &bytes_received, &flags)) {
+            if (!wait_for_packet(resources)) {
                 std::println("Shutting down while getting message");
                 goto SHUTDOWN;
             }
 
             if (print_packet_debug_strings) {
-                std::println("Received {} byte(s) from server ({} messages remain)", bytes_received, messages.size());
+                std::println("Received {} byte(s) from server ({} messages remain)", resources.bytes_received, messages.size());
             }
 
-            packet.buffer.resize(bytes_received);
+            packet.buffer = std::move(resources.buffer);
             message_buffer_option = add_packet(std::move(packet));
         }
 
@@ -248,8 +166,119 @@ SHUTDOWN:
     condition_variable.notify_all(); // Because the main thread can block on the mutex.
 }
 
-void Connection::ready() {
-    assert(!ready_packet_sent);
+Connection::Receive_Resources Connection::get_receive_resources() {
+    Receive_Resources resources;
+    resources.wsabuf = get_wsabuf(resources.buffer);
+    resources.overlapped = { .hEvent = packet_received_event };
+    return resources;
+}
+
+std::optional<std::vector<uint8_t>> Connection::get_message() {
+    while (true) {
+        std::unique_lock lock(mutex);
+        condition_variable.wait(lock, [this]() { return !buffers.empty() || shutting_down; });
+
+        if (shutting_down) {
+            return std::nullopt;
+        } else if (!buffers.empty()) {
+            std::swap(buffers.front(), buffers.back());
+            std::vector<uint8_t> buffer = std::move(buffers.back());
+            buffers.pop_back();
+            return buffer;
+        }
+    }
+}
+
+void Connection::reset_receive_resources(Receive_Resources &resources) const {
+    resources.wsabuf = get_wsabuf(resources.buffer);
+    resources.overlapped = { .hEvent = packet_received_event };
+    resources.flags = 0;
+    resources.bytes_received = 0;
+}
+
+sockaddr Connection::get_server_address(Receive_Resources &resources) {
+    if (print_packet_debug_strings) {
+        std::println("Getting server address");
+    }
+
+    while (true) {
+        sockaddr server_address = {};
+        INT server_address_length = sizeof(server_address);
+        int receive_result = WSARecvFrom(socket, &resources.wsabuf, 1, NULL, &resources.flags, &server_address, &server_address_length, &resources.overlapped, NULL);
+        if (receive_result == 0) {
+            return server_address;
+        } else {
+            int last_error = WSAGetLastError();
+            if (last_error == WSA_IO_PENDING) {
+                if (wait_for_packet(resources)) {
+                    return server_address;
+                }
+            } else {
+                THROW_WSA_CODE(WSARecvFrom, last_error);
+            }
+        }
+
+        reset_receive_resources(resources);
+    }
+}
+
+void Connection::thread_function() {
+    if (print_packet_debug_strings) {
+        std::println("Resolving server address");
+    }
+
+    ADDRINFOW hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    PADDRINFOW send_info = NULL;
+    if (GetAddrInfoW(settings.address.data(), settings.port.data(), &hints, &send_info) != 0) {
+        THROW_WSA(GetAddrInfoW);
+    }
+
+    socket = WSASocketW(hints.ai_family, hints.ai_socktype, hints.ai_protocol, NULL, 0, WSA_FLAG_OVERLAPPED);
+    if (socket == INVALID_SOCKET) {
+        THROW_WSA(WSASocketW);
+    }
+
+    assert(settings.greeting_cooldown.count() <= INT32_MAX);
+    DWORD greeting_cooldown = (int32_t)settings.greeting_cooldown.count();
+    if (setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, (char *)&greeting_cooldown, sizeof(greeting_cooldown)) == SOCKET_ERROR) {
+        THROW_WSA(setsockopt);
+    }
+
+    if (WSAConnect(socket, send_info->ai_addr, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
+        THROW_WSA(WSAConnect);
+    }
+
+    if (print_packet_debug_strings) {
+        std::println("Greeting server");
+    }
+
+    if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
+        THROW_WSA(WSASend);
+    }
+
+    Receive_Resources resources = get_receive_resources();
+    sockaddr server_address = get_server_address(resources);
+
+    assert(resources.bytes_received == sizeof(int32_t));
+
+    std::vector<uint8_t> initial_message;
+    uint16_t server_port = *(int32_t *)resources.buffer.data();
+    if (server_port == 0) {
+        throw std::runtime_error(std::format("Server receive port is {}", server_port));
+    }
+
+    ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
+
+    if (print_packet_debug_strings) {
+        std::println("Received {} bytes; server port is {}", resources.bytes_received, server_port);
+    }
+
+    if (WSAConnect(socket, &server_address, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
+        THROW_WSA(WSAConnect);
+    }
 
     if (print_packet_debug_strings) {
         std::println("Sending 'ready' packet to server");
@@ -259,9 +288,18 @@ void Connection::ready() {
         THROW_WSA(WSASend);
     }
 
-    ready_packet_sent = true;
+    receive();
+}
 
-    thread = std::thread(&Connection::receive, this);
+void Connection::initialise(Settings settings_) {
+    assert(!initialised);
+    settings = settings_;
+
+    events = { packet_received_event, settings.shutdown_event };
+
+    initialised = true;
+
+    thread = std::thread(&Connection::thread_function, this);
 }
 
 WSABUF Connection::get_wsabuf(std::span<uint8_t> span) {
