@@ -67,9 +67,7 @@ std::vector<uint8_t> Connection::remove_message_and_get_payload(Partial_Message 
 }
 
 // Returns message buffer if it completes a message.
-std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet) {
-    Header header = packet.header();
-
+std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet, Header &header) {
     auto message_it = std::ranges::find_if(incomplete_messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Partial_Message::message_index);
 
     // If the message doesn't exist, create it.
@@ -133,7 +131,7 @@ bool Connection::wait_for_packet(Receive_Resources &resources) {
             std::scoped_lock lock(mutex);
             shutting_down = true;
 
-            std::scoped_lock lock(send_mutex);
+            std::scoped_lock send_lock(send_mutex);
             send_cv.notify_all();
 
             return false;
@@ -285,50 +283,6 @@ void Connection::init_socket() {
     }
 }
 
-void Connection::receive_thread_function() {
-    init_socket();
-
-    while (true) {
-        std::optional<std::vector<uint8_t>> message_buffer_option = std::nullopt;
-
-        while (message_buffer_option == std::nullopt) {
-            Receive_Resources resources = get_receive_resources();
-            Packet packet;
-            int receive_result = WSARecv(socket, &resources.wsabuf, 1, NULL, &resources.flags, &resources.overlapped, NULL);
-            if (receive_result != 0) {
-                int last_error = WSAGetLastError();
-                if (last_error != WSA_IO_PENDING) {
-                    THROW_WSA_CODE(WSARecvFrom, last_error);
-                }
-            }
-
-            if (!wait_for_packet(resources)) {
-                std::println("Shutting down while getting message");
-                goto SHUTDOWN;
-            }
-
-            if (print_packet_debug_strings) {
-                std::println("Received {} byte(s) from server", resources.bytes_received);
-            }
-
-            resources.buffer.resize(resources.bytes_received);
-
-            packet.buffer = std::move(resources.buffer);
-            message_buffer_option = add_packet(std::move(packet));
-        }
-
-        {
-            std::unique_lock lock(mutex);
-            received_buffers.push_back(std::move(*message_buffer_option));
-        }
-
-        condition_variable.notify_all();
-    }
-
-SHUTDOWN:
-    condition_variable.notify_all(); // Because the main thread can block on the mutex.
-}
-
 size_t Connection::get_next_message_index() {
     size_t message_index = next_message_index;
     next_message_index++;
@@ -338,7 +292,7 @@ size_t Connection::get_next_message_index() {
 std::vector<Send_Resources> Connection::get_message_packets(Message &message) {
     size_t packet_count = message.buffer.size() / payload_size + ((message.buffer.size() % payload_size) > 0) ? 1 : 0;
     Header header = {};
-    header.message_index = message.message_index;
+    header.message_index = message.index;
     header.packet_count = packet_count;
     header.other = 0;
 
@@ -353,33 +307,12 @@ std::vector<Send_Resources> Connection::get_message_packets(Message &message) {
         std::memcpy(resources.buffer.data() + sizeof(Header), message.buffer.data() + bytes_read, bytes_to_read);
 
         bytes_read += bytes_to_read;
-        resources.wsabuf.len = bytes_to_read;
+        resources.wsabuf.len = (ULONG)bytes_to_read;
     }
 
     assert(bytes_read == message.buffer.size());
 
     return packets;
-}
-
-void Connection::send_thread_function() {
-    while (true) {
-        std::unique_lock lock(send_mutex);
-        send_cv.wait(lock, [this]() { return !send_messages.empty() || shutting_down; });
-
-        if (shutting_down) {
-            break;
-        }
-
-        for (size_t i = 0; i < send_messages.size(); i++) {
-            Message &message = send_messages[i];
-            std::vector<Send_Resources> packets = get_message_packets(message);
-
-            for (size_t j = 0; j < packets.size(); j++) {
-                Send_Resources& packet = packets[j];
-                
-            }
-        }
-    }
 }
 
 void Connection::initialise(Settings settings_) {
@@ -416,6 +349,99 @@ void Connection::join_threads() {
     if (connected) {
         if (closesocket(socket) == SOCKET_ERROR) {
             THROW_WSA(closesocket);
+        }
+    }
+}
+
+void Connection::acknowledge_completed_message(int64_t message_index) {
+    Message message(0);
+    message.index = message_index;
+    message.other = (int64_t)MESSAGE_TYPE_MESSAGE_COMPLETE;
+
+    if (print_message_debug_strings) {
+        std::println("Dispatching message to acknowledge message {}", message_index);
+    }
+
+    {
+        std::scoped_lock lock(send_mutex);
+        send_messages.push_back(message);
+    }
+
+    send_cv.notify_all();
+
+    if (print_message_debug_strings) {
+        std::println("Dispatched message to acknowledge message {}", message_index);
+    }
+}
+
+void Connection::receive_thread_function() {
+    init_socket();
+
+    while (true) {
+        std::optional<std::vector<uint8_t>> message_buffer_option = std::nullopt;
+
+        while (message_buffer_option == std::nullopt) {
+            Receive_Resources resources = get_receive_resources();
+            Packet packet;
+            int receive_result = WSARecv(socket, &resources.wsabuf, 1, NULL, &resources.flags, &resources.overlapped, NULL);
+            if (receive_result != 0) {
+                int last_error = WSAGetLastError();
+                if (last_error != WSA_IO_PENDING) {
+                    THROW_WSA_CODE(WSARecvFrom, last_error);
+                }
+            }
+
+            if (!wait_for_packet(resources)) {
+                std::println("Shutting down while getting message");
+                goto SHUTDOWN;
+            }
+
+            if (print_packet_debug_strings) {
+                std::println("Received {} byte(s) from server", resources.bytes_received);
+            }
+
+            resources.buffer.resize(resources.bytes_received);
+
+            packet.buffer = std::move(resources.buffer);
+            Header header = packet.header();
+            message_buffer_option = add_packet(std::move(packet), header);
+
+            if (message_buffer_option) {
+                acknowledge_completed_message(header.message_index);
+            }
+        }
+
+        {
+            std::unique_lock lock(mutex);
+            received_buffers.push_back(std::move(*message_buffer_option));
+        }
+
+        condition_variable.notify_all();
+    }
+
+SHUTDOWN:
+    condition_variable.notify_all(); // Because the main thread can block on the mutex.
+}
+
+void Connection::send_thread_function() {
+    while (true) {
+        std::unique_lock lock(send_mutex);
+        send_cv.wait(lock, [this]() { return !send_messages.empty() || shutting_down; });
+
+        if (shutting_down) {
+            break;
+        }
+
+        for (size_t i = 0; i < send_messages.size(); i++) {
+            Message &message = send_messages[i];
+            std::vector<Send_Resources> packets = get_message_packets(message);
+
+            for (size_t j = 0; j < packets.size(); j++) {
+                Send_Resources &packet = packets[j];
+                if (WSASend(socket, &packet.wsabuf, 1, &packet.bytes_sent, 0, NULL, NULL) == SOCKET_ERROR) {
+                    THROW_WSA(WSASend);
+                }
+            }
         }
     }
 }

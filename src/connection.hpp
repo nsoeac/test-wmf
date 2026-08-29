@@ -12,8 +12,6 @@ struct Header {
 static constexpr int packet_size = 1'384;
 static constexpr int header_size = sizeof(Header);
 static constexpr int payload_size = packet_size - header_size;
-static constexpr bool print_packet_debug_strings = false;
-static constexpr bool print_message_debug_strings = false;
 
 struct Settings {
     std::wstring address;
@@ -39,8 +37,7 @@ struct Send_Resources {
 
 enum MESSAGE_TYPE {
     MESSAGE_TYPE_NULL = 0,
-    MESSAGE_TYPE_HELLO = 1,
-    MESSAGE_TYPE_TEST_LATENCY = 2,
+    MESSAGE_TYPE_MESSAGE_COMPLETE = 1,
 };
 
 struct Packet {
@@ -57,7 +54,8 @@ struct Partial_Message {
 };
 
 struct Message {
-    size_t message_index;
+    int64_t index = 0;
+    int64_t other = 0;
     std::vector<uint8_t> buffer;
     Message(size_t size);
 };
@@ -70,6 +68,9 @@ struct Connection {
     [[nodiscard]] std::optional<std::vector<uint8_t>> get_message();
     void join_threads();
 private:
+    static constexpr bool print_packet_debug_strings = true;
+    static constexpr bool print_message_debug_strings = true;
+
     Settings settings;
     bool initialised = false;
 
@@ -96,7 +97,8 @@ private:
 
     std::vector<Send_Resources> get_message_packets(Message &message);
     std::vector<uint8_t> remove_message_and_get_payload(Partial_Message &message);
-    std::optional<std::vector<uint8_t>> add_packet(Packet &&packet); // Returns message buffer if it completes a message.
+    std::optional<std::vector<uint8_t>> add_packet(Packet &&packet, Header &header); // Returns message buffer if it completes a message.
+    void acknowledge_completed_message(int64_t message_index);
     bool wait_for_packet(Receive_Resources &resources);
     sockaddr get_server_address(Receive_Resources &resources);
 
