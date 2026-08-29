@@ -19,12 +19,13 @@ struct App {
         std::span<uint8_t> frame;
     };
 
-    bool can_initialise_decoder = false;
     HANDLE shutdown_event = NULL;
     Window window;
     Renderer renderer;
     Decoder decoder;
     Connection connection;
+
+    static constexpr bool print_frame_debug_strings = false;
 
     App(Config &config);
     Message create_message(std::vector<uint8_t> &&buffer);

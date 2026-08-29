@@ -34,7 +34,7 @@ struct Connection {
     static constexpr int header_size = sizeof(Header);
     static constexpr int payload_size = packet_size - header_size;
     static constexpr bool print_packet_debug_strings = false;
-    static constexpr bool print_message_debug_strings = true;
+    static constexpr bool print_message_debug_strings = false;
 
     struct Packet {
         std::vector<uint8_t> buffer;

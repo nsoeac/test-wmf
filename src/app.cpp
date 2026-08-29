@@ -78,7 +78,11 @@ App::App(Config &config) {
 
         {
             Message message = create_message(std::move(*message_buffer));
-            std::println("{}", message.header);
+
+            if (print_frame_debug_strings) {
+                std::println("{}: {} bytes", message.header, message.frame.size());
+            }
+
             assert(message.header.frame_index != -1);
             process_message(message);
         }
