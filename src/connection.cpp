@@ -127,48 +127,6 @@ bool Connection::wait_for_packet(Receive_Resources &resources) {
     }
 }
 
-void Connection::receive() {
-    while (true) {
-        std::optional<std::vector<uint8_t>> message_buffer_option = std::nullopt;
-
-        while (message_buffer_option == std::nullopt) {
-            Receive_Resources resources = get_receive_resources();
-            Packet packet;
-            int receive_result = WSARecv(socket, &resources.wsabuf, 1, NULL, &resources.flags, &resources.overlapped, NULL);
-            if (receive_result != 0) {
-                int last_error = WSAGetLastError();
-                if (last_error != WSA_IO_PENDING) {
-                    THROW_WSA_CODE(WSARecvFrom, last_error);
-                }
-            }
-
-            if (!wait_for_packet(resources)) {
-                std::println("Shutting down while getting message");
-                goto SHUTDOWN;
-            }
-
-            if (print_packet_debug_strings) {
-                std::println("Received {} byte(s) from server", resources.bytes_received);
-            }
-
-            resources.buffer.resize(resources.bytes_received);
-
-            packet.buffer = std::move(resources.buffer);
-            message_buffer_option = add_packet(std::move(packet));
-        }
-
-        {
-            std::unique_lock lock(mutex);
-            buffers.push_back(std::move(*message_buffer_option));
-        }
-
-        condition_variable.notify_all();
-    }
-
-SHUTDOWN:
-    condition_variable.notify_all(); // Because the main thread can block on the mutex.
-}
-
 Connection::Receive_Resources Connection::get_receive_resources() {
     Receive_Resources resources;
     resources.wsabuf = get_wsabuf(resources.buffer);
@@ -225,7 +183,7 @@ sockaddr Connection::get_server_address(Receive_Resources &resources) {
     }
 }
 
-void Connection::thread_function() {
+void Connection::init_socket() {
     if (print_packet_debug_strings) {
         std::println("Resolving server address");
     }
@@ -284,6 +242,13 @@ void Connection::thread_function() {
         THROW_WSA(WSAConnect);
     }
 
+    {
+        std::unique_lock lock(mutex);
+        connected = true;
+    }
+
+    condition_variable.notify_all();
+
     if (print_packet_debug_strings) {
         std::println("Sending 'ready' packet to server");
     }
@@ -291,8 +256,53 @@ void Connection::thread_function() {
     if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
         THROW_WSA(WSASend);
     }
+}
 
-    receive();
+void Connection::receive_thread_function() {
+    init_socket();
+
+    while (true) {
+        std::optional<std::vector<uint8_t>> message_buffer_option = std::nullopt;
+
+        while (message_buffer_option == std::nullopt) {
+            Receive_Resources resources = get_receive_resources();
+            Packet packet;
+            int receive_result = WSARecv(socket, &resources.wsabuf, 1, NULL, &resources.flags, &resources.overlapped, NULL);
+            if (receive_result != 0) {
+                int last_error = WSAGetLastError();
+                if (last_error != WSA_IO_PENDING) {
+                    THROW_WSA_CODE(WSARecvFrom, last_error);
+                }
+            }
+
+            if (!wait_for_packet(resources)) {
+                std::println("Shutting down while getting message");
+                goto SHUTDOWN;
+            }
+
+            if (print_packet_debug_strings) {
+                std::println("Received {} byte(s) from server", resources.bytes_received);
+            }
+
+            resources.buffer.resize(resources.bytes_received);
+
+            packet.buffer = std::move(resources.buffer);
+            message_buffer_option = add_packet(std::move(packet));
+        }
+
+        {
+            std::unique_lock lock(mutex);
+            buffers.push_back(std::move(*message_buffer_option));
+        }
+
+        condition_variable.notify_all();
+    }
+
+SHUTDOWN:
+    condition_variable.notify_all(); // Because the main thread can block on the mutex.
+}
+
+void Connection::send_thread_function() {
 }
 
 void Connection::initialise(Settings settings_) {
@@ -303,7 +313,18 @@ void Connection::initialise(Settings settings_) {
 
     initialised = true;
 
-    thread = std::thread(&Connection::thread_function, this);
+    receive_thread = std::thread(&Connection::receive_thread_function, this);
+
+    {
+        std::unique_lock lock(mutex);
+        condition_variable.wait(lock, [this]() { return connected || shutting_down; });
+
+        if (shutting_down) {
+            return;
+        }
+    }
+
+    send_thread = std::thread(&Connection::send_thread_function, this);
 }
 
 WSABUF Connection::get_wsabuf(std::span<uint8_t> span) {
@@ -311,4 +332,14 @@ WSABUF Connection::get_wsabuf(std::span<uint8_t> span) {
     wsabuf.buf = (CHAR *)span.data();
     wsabuf.len = (ULONG)span.size();
     return wsabuf;
+}
+
+void Connection::join_threads() {
+    if (receive_thread.joinable()) {
+        receive_thread.join();
+    }
+
+    if (send_thread.joinable()) {
+        send_thread.join();
+    }
 }

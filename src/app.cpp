@@ -97,9 +97,7 @@ BEGIN_SHUTDOWN:
         renderer.thread.join();
     }
 
-    if (connection.thread.joinable()) {
-        connection.thread.join();
-    }
+    connection.join_threads();
 
     if (decoder.thread.joinable()) {
         decoder.thread.join();

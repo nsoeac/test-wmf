@@ -76,14 +76,17 @@ struct Connection {
     Connection();
     void initialise(Settings settings);
 
-    std::thread thread;
-    void thread_function();
-    void receive();
+    std::thread receive_thread;
+    std::thread send_thread;
+    void receive_thread_function();
+    void send_thread_function();
+    void init_socket();
+    void join_threads();
     static WSABUF get_wsabuf(std::span<uint8_t> span);
     Receive_Resources get_receive_resources();
     void reset_receive_resources(Receive_Resources &resources) const;
     [[nodiscard]] std::optional<std::vector<uint8_t>> get_message();
 private:
     [[nodiscard]] bool wait_for_packet(Receive_Resources &resources);
-    [[nodiscard]] sockaddr get_server_address(Receive_Resources& resources);
+    [[nodiscard]] sockaddr get_server_address(Receive_Resources &resources);
 };
