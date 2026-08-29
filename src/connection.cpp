@@ -2,7 +2,9 @@
 
 #include "lib/lib.hpp"
 
-Connection::Header Connection::Packet::header() const {
+namespace Networking {
+
+Header Packet::header() const {
     assert(buffer.size() >= header_size);
 
     Header header;
@@ -11,7 +13,7 @@ Connection::Header Connection::Packet::header() const {
     return header;
 }
 
-int64_t Connection::Packet::packet_index() const {
+int64_t Packet::packet_index() const {
     assert(buffer.size() >= header_size);
 
     int64_t packet_index = 0;
@@ -20,8 +22,13 @@ int64_t Connection::Packet::packet_index() const {
     return packet_index;
 }
 
-bool Connection::Message::is_complete() const {
+bool Message::is_complete() const {
     return packet_count == (int64_t)packets.size();
+}
+
+Send_Resources::Send_Resources() {
+    wsabuf.buf = (CHAR *)buffer.data();
+    wsabuf.len = (ULONG)buffer.size();
 }
 
 [[nodiscard]] std::vector<uint8_t> Connection::remove_message_and_get_payload(Message &message) {
@@ -43,8 +50,8 @@ bool Connection::Message::is_complete() const {
 
     // Remove the message.
 
-    std::swap(message, messages.back());
-    messages.pop_back();
+    std::swap(message, incomplete_messages.back());
+    incomplete_messages.pop_back();
 
     return message_payload;
 }
@@ -53,16 +60,16 @@ bool Connection::Message::is_complete() const {
 [[nodiscard]] std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet) {
     Header header = packet.header();
 
-    auto message_it = std::ranges::find_if(messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Message::message_index);
+    auto message_it = std::ranges::find_if(incomplete_messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Message::message_index);
 
     // If the message doesn't exist, create it.
 
-    if (message_it == messages.end()) {
+    if (message_it == incomplete_messages.end()) {
         Message message;
         message.message_index = header.message_index;
         message.packet_count = header.packet_count;
-        messages.push_back(message);
-        message_it = std::prev(messages.end());
+        incomplete_messages.push_back(message);
+        message_it = std::prev(incomplete_messages.end());
     }
 
     Message &message = *message_it;
@@ -77,7 +84,7 @@ bool Connection::Message::is_complete() const {
             std::vector<uint8_t> buffer = remove_message_and_get_payload(message);
 
             if (print_message_debug_strings) {
-                std::println("Message {} ({} bytes) completed; {} messages remain", message.message_index, buffer.size(), messages.size());
+                std::println("Message {} ({} bytes) completed; {} messages remain", message.message_index, buffer.size(), incomplete_messages.size());
             }
 
             return buffer;
@@ -90,9 +97,6 @@ bool Connection::Message::is_complete() const {
 }
 
 Connection::Connection() {
-    wsa_send_buffer.buf = (CHAR *)send_buffer.data();
-    wsa_send_buffer.len = (ULONG)send_buffer.size();
-
     packet_received_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (packet_received_event == NULL) {
         THROW_WIN32(CreateEventW);
@@ -127,7 +131,7 @@ bool Connection::wait_for_packet(Receive_Resources &resources) {
     }
 }
 
-Connection::Receive_Resources Connection::get_receive_resources() {
+Receive_Resources Connection::get_receive_resources() {
     Receive_Resources resources;
     resources.wsabuf = get_wsabuf(resources.buffer);
     resources.overlapped = { .hEvent = packet_received_event };
@@ -216,9 +220,12 @@ void Connection::init_socket() {
         std::println("Greeting server");
     }
 
-    WSABUF empty_wsabuf = {};
-    if (WSASend(socket, &empty_wsabuf, 1, &bytes_sent, 0, NULL, NULL) != 0) {
-        THROW_WSA(WSASend);
+    {
+        WSABUF wsabuf = {};
+        DWORD bytes_sent = 0;
+        if (WSASend(socket, &wsabuf, 1, &bytes_sent, 0, NULL, NULL) != 0) {
+            THROW_WSA(WSASend);
+        }
     }
 
     Receive_Resources resources = get_receive_resources();
@@ -253,8 +260,12 @@ void Connection::init_socket() {
         std::println("Sending 'ready' packet to server");
     }
 
-    if (WSASend(socket, &wsa_send_buffer, 1, &bytes_sent, 0, NULL, NULL) != 0) {
-        THROW_WSA(WSASend);
+    {
+        Send_Resources resources;
+        resources.buffer.resize(header_size);
+        if (WSASend(socket, &resources.wsabuf, 1, &resources.bytes_sent, 0, NULL, NULL) != 0) {
+            THROW_WSA(WSASend);
+        }
     }
 }
 
@@ -342,4 +353,6 @@ void Connection::join_threads() {
     if (send_thread.joinable()) {
         send_thread.join();
     }
+}
+
 }

@@ -26,7 +26,7 @@ App::App(Config &config) {
     renderer.start(window.handle, &decoder, &window);
 
     {
-        Connection::Settings connection_settings;
+        Networking::Settings connection_settings;
         connection_settings.address = config.address;
         connection_settings.port = config.port;
         connection_settings.shutdown_event = shutdown_event;

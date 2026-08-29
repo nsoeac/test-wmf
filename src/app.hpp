@@ -23,7 +23,7 @@ struct App {
     Window window;
     Renderer renderer;
     Decoder decoder;
-    Connection connection;
+    Networking::Connection connection;
 
     static constexpr bool print_frame_debug_strings = false;
 
