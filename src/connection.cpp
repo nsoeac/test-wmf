@@ -291,10 +291,15 @@ size_t Connection::get_next_message_index() {
 
 std::vector<Send_Resources> Connection::get_message_packets(Message &message) {
     size_t packet_count = message.buffer.size() / payload_size + ((message.buffer.size() % payload_size) > 0) ? 1 : 0;
+
+    if (packet_count == 0) {
+        packet_count = 1;
+    }
+
     Header header = {};
     header.message_index = message.index;
     header.packet_count = packet_count;
-    header.other = 0;
+    header.other = message.other;
 
     std::vector<Send_Resources> packets(packet_count);
     size_t bytes_read = 0;
@@ -307,7 +312,7 @@ std::vector<Send_Resources> Connection::get_message_packets(Message &message) {
         std::memcpy(resources.buffer.data() + sizeof(Header), message.buffer.data() + bytes_read, bytes_to_read);
 
         bytes_read += bytes_to_read;
-        resources.wsabuf.len = (ULONG)bytes_to_read;
+        resources.wsabuf.len = (ULONG)(bytes_to_read + header_size);
     }
 
     assert(bytes_read == message.buffer.size());
@@ -445,8 +450,14 @@ void Connection::send_thread_function() {
                 if (WSASend(socket, &packet.wsabuf, 1, &packet.bytes_sent, 0, NULL, NULL) == SOCKET_ERROR) {
                     THROW_WSA(WSASend);
                 }
+
+                if (print_packet_debug_strings) {
+                    std::println("Sent {} byte(s) to server", packet.bytes_sent);
+                }
             }
         }
+
+        send_messages.clear();
     }
 }
 #pragma endregion
