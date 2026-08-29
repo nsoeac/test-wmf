@@ -31,7 +31,15 @@ Send_Resources::Send_Resources() {
     wsabuf.len = (ULONG)buffer.size();
 }
 
-[[nodiscard]] std::vector<uint8_t> Connection::remove_message_and_get_payload(Message &message) {
+WSABUF get_wsabuf(std::span<uint8_t> span) {
+    WSABUF wsabuf = {};
+    wsabuf.buf = (CHAR *)span.data();
+    wsabuf.len = (ULONG)span.size();
+    return wsabuf;
+}
+
+#pragma region Connection
+std::vector<uint8_t> Connection::remove_message_and_get_payload(Message &message) {
     assert(message.is_complete());
 
     // Initialise buffer of appropriate size.
@@ -57,7 +65,7 @@ Send_Resources::Send_Resources() {
 }
 
 // Returns message buffer if it completes a message.
-[[nodiscard]] std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet) {
+std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet) {
     Header header = packet.header();
 
     auto message_it = std::ranges::find_if(incomplete_messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Message::message_index);
@@ -141,14 +149,14 @@ Receive_Resources Connection::get_receive_resources() {
 std::optional<std::vector<uint8_t>> Connection::get_message() {
     while (true) {
         std::unique_lock lock(mutex);
-        condition_variable.wait(lock, [this]() { return !buffers.empty() || shutting_down; });
+        condition_variable.wait(lock, [this]() { return !received_buffers.empty() || shutting_down; });
 
         if (shutting_down) {
             return std::nullopt;
-        } else if (!buffers.empty()) {
-            std::swap(buffers.front(), buffers.back());
-            std::vector<uint8_t> buffer = std::move(buffers.back());
-            buffers.pop_back();
+        } else if (!received_buffers.empty()) {
+            std::swap(received_buffers.front(), received_buffers.back());
+            std::vector<uint8_t> buffer = std::move(received_buffers.back());
+            received_buffers.pop_back();
             return buffer;
         }
     }
@@ -228,25 +236,27 @@ void Connection::init_socket() {
         }
     }
 
-    Receive_Resources resources = get_receive_resources();
-    sockaddr server_address = get_server_address(resources);
+    {
+        Receive_Resources resources = get_receive_resources();
+        sockaddr server_address = get_server_address(resources);
 
-    assert(resources.bytes_received == sizeof(int32_t));
+        assert(resources.bytes_received == sizeof(int32_t));
 
-    std::vector<uint8_t> initial_message;
-    uint16_t server_port = (uint16_t)*(int32_t *)resources.buffer.data();
-    if (server_port == 0) {
-        throw std::runtime_error(std::format("Server receive port is {}", server_port));
-    }
+        std::vector<uint8_t> initial_message;
+        uint16_t server_port = (uint16_t)*(int32_t *)resources.buffer.data();
+        if (server_port == 0) {
+            throw std::runtime_error(std::format("Server receive port is {}", server_port));
+        }
 
-    ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
+        ((sockaddr_in *)&server_address)->sin_port = htons(server_port);
 
-    if (print_packet_debug_strings) {
-        std::println("Received {} bytes; server port is {}", resources.bytes_received, server_port);
-    }
+        if (print_packet_debug_strings) {
+            std::println("Received {} bytes; server port is {}", resources.bytes_received, server_port);
+        }
 
-    if (WSAConnect(socket, &server_address, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
-        THROW_WSA(WSAConnect);
+        if (WSAConnect(socket, &server_address, sizeof(sockaddr_in), NULL, NULL, NULL, NULL) == SOCKET_ERROR) {
+            THROW_WSA(WSAConnect);
+        }
     }
 
     {
@@ -303,7 +313,7 @@ void Connection::receive_thread_function() {
 
         {
             std::unique_lock lock(mutex);
-            buffers.push_back(std::move(*message_buffer_option));
+            received_buffers.push_back(std::move(*message_buffer_option));
         }
 
         condition_variable.notify_all();
@@ -338,13 +348,6 @@ void Connection::initialise(Settings settings_) {
     send_thread = std::thread(&Connection::send_thread_function, this);
 }
 
-WSABUF Connection::get_wsabuf(std::span<uint8_t> span) {
-    WSABUF wsabuf = {};
-    wsabuf.buf = (CHAR *)span.data();
-    wsabuf.len = (ULONG)span.size();
-    return wsabuf;
-}
-
 void Connection::join_threads() {
     if (receive_thread.joinable()) {
         receive_thread.join();
@@ -354,5 +357,6 @@ void Connection::join_threads() {
         send_thread.join();
     }
 }
+#pragma endregion
 
 }

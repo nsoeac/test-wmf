@@ -56,44 +56,44 @@ struct Message {
     bool is_complete() const;
 };
 
+WSABUF get_wsabuf(std::span<uint8_t> span);
+
 struct Connection {
+    Connection();
+    void initialise(Settings settings);
+    [[nodiscard]] std::optional<std::vector<uint8_t>> get_message();
+    void join_threads();
+private:
     Settings settings;
     bool initialised = false;
 
     std::mutex mutex;
     std::condition_variable condition_variable;
-    std::vector<std::vector<uint8_t>> buffers;
+    std::vector<std::vector<uint8_t>> received_buffers;
     bool connected = false;
     bool shutting_down = false;
 
     SOCKET socket = INVALID_SOCKET;
+    void init_socket();
 
     HANDLE packet_received_event = NULL;
     static constexpr DWORD packet_received_event_index = 0;
     static constexpr DWORD shutdown_event_index = 1;
     std::array<HANDLE, 2> events = { NULL, NULL };
-
     std::vector<Message> incomplete_messages;
 
-    [[nodiscard]] std::vector<uint8_t> remove_message_and_get_payload(Message &message);
-    [[nodiscard]] std::optional<std::vector<uint8_t>> add_packet(Packet &&packet); // Returns message buffer if it completes a message.
+    std::vector<uint8_t> remove_message_and_get_payload(Message &message);
+    std::optional<std::vector<uint8_t>> add_packet(Packet &&packet); // Returns message buffer if it completes a message.
+    bool wait_for_packet(Receive_Resources &resources);
+    sockaddr get_server_address(Receive_Resources &resources);
 
-    Connection();
-    void initialise(Settings settings);
+    Receive_Resources get_receive_resources();
+    void reset_receive_resources(Receive_Resources &resources) const;
 
     std::thread receive_thread;
     std::thread send_thread;
     void receive_thread_function();
     void send_thread_function();
-    void init_socket();
-    void join_threads();
-    static WSABUF get_wsabuf(std::span<uint8_t> span);
-    Receive_Resources get_receive_resources();
-    void reset_receive_resources(Receive_Resources &resources) const;
-    [[nodiscard]] std::optional<std::vector<uint8_t>> get_message();
-private:
-    [[nodiscard]] bool wait_for_packet(Receive_Resources &resources);
-    [[nodiscard]] sockaddr get_server_address(Receive_Resources &resources);
 };
 
 }
