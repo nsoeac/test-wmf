@@ -22,7 +22,7 @@ int64_t Packet::packet_index() const {
     return packet_index;
 }
 
-bool Message::is_complete() const {
+bool Partial_Message::is_complete() const {
     return packet_count == (int64_t)packets.size();
 }
 
@@ -38,8 +38,10 @@ WSABUF get_wsabuf(std::span<uint8_t> span) {
     return wsabuf;
 }
 
+Message::Message(size_t size) : buffer(size) {}
+
 #pragma region Connection
-std::vector<uint8_t> Connection::remove_message_and_get_payload(Message &message) {
+std::vector<uint8_t> Connection::remove_message_and_get_payload(Partial_Message &message) {
     assert(message.is_complete());
 
     // Initialise buffer of appropriate size.
@@ -68,19 +70,19 @@ std::vector<uint8_t> Connection::remove_message_and_get_payload(Message &message
 std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet) {
     Header header = packet.header();
 
-    auto message_it = std::ranges::find_if(incomplete_messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Message::message_index);
+    auto message_it = std::ranges::find_if(incomplete_messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Partial_Message::message_index);
 
     // If the message doesn't exist, create it.
 
     if (message_it == incomplete_messages.end()) {
-        Message message;
+        Partial_Message message;
         message.message_index = header.message_index;
         message.packet_count = header.packet_count;
         incomplete_messages.push_back(message);
         message_it = std::prev(incomplete_messages.end());
     }
 
-    Message &message = *message_it;
+    Partial_Message &message = *message_it;
 
     // Add the packet if we don't already have it.
 
@@ -130,6 +132,10 @@ bool Connection::wait_for_packet(Receive_Resources &resources) {
         } else if (event_index == shutdown_event_index) {
             std::scoped_lock lock(mutex);
             shutting_down = true;
+
+            std::scoped_lock lock(send_mutex);
+            send_cv.notify_all();
+
             return false;
         } else {
             return false;
@@ -323,7 +329,57 @@ SHUTDOWN:
     condition_variable.notify_all(); // Because the main thread can block on the mutex.
 }
 
+size_t Connection::get_next_message_index() {
+    size_t message_index = next_message_index;
+    next_message_index++;
+    return message_index;
+}
+
+std::vector<Send_Resources> Connection::get_message_packets(Message &message) {
+    size_t packet_count = message.buffer.size() / payload_size + ((message.buffer.size() % payload_size) > 0) ? 1 : 0;
+    Header header = {};
+    header.message_index = message.message_index;
+    header.packet_count = packet_count;
+    header.other = 0;
+
+    std::vector<Send_Resources> packets(packet_count);
+    size_t bytes_read = 0;
+    for (size_t i = 0; i < packet_count; i++) {
+        Send_Resources &resources = packets[i];
+
+        header.packet_index = i;
+        std::memcpy(resources.buffer.data(), &header, sizeof(Header));
+        size_t bytes_to_read = std::min<size_t>(message.buffer.size() - bytes_read, payload_size);
+        std::memcpy(resources.buffer.data() + sizeof(Header), message.buffer.data() + bytes_read, bytes_to_read);
+
+        bytes_read += bytes_to_read;
+        resources.wsabuf.len = bytes_to_read;
+    }
+
+    assert(bytes_read == message.buffer.size());
+
+    return packets;
+}
+
 void Connection::send_thread_function() {
+    while (true) {
+        std::unique_lock lock(send_mutex);
+        send_cv.wait(lock, [this]() { return !send_messages.empty() || shutting_down; });
+
+        if (shutting_down) {
+            break;
+        }
+
+        for (size_t i = 0; i < send_messages.size(); i++) {
+            Message &message = send_messages[i];
+            std::vector<Send_Resources> packets = get_message_packets(message);
+
+            for (size_t j = 0; j < packets.size(); j++) {
+                Send_Resources& packet = packets[j];
+                
+            }
+        }
+    }
 }
 
 void Connection::initialise(Settings settings_) {
@@ -355,6 +411,12 @@ void Connection::join_threads() {
 
     if (send_thread.joinable()) {
         send_thread.join();
+    }
+
+    if (connected) {
+        if (closesocket(socket) == SOCKET_ERROR) {
+            THROW_WSA(closesocket);
+        }
     }
 }
 #pragma endregion

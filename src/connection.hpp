@@ -49,11 +49,17 @@ struct Packet {
     int64_t packet_index() const;
 };
 
-struct Message {
+struct Partial_Message {
     std::vector<Packet> packets;
     int64_t message_index = 0;
     int64_t packet_count = 0;
     bool is_complete() const;
+};
+
+struct Message {
+    size_t message_index;
+    std::vector<uint8_t> buffer;
+    Message(size_t size);
 };
 
 WSABUF get_wsabuf(std::span<uint8_t> span);
@@ -73,6 +79,12 @@ private:
     bool connected = false;
     bool shutting_down = false;
 
+    std::mutex send_mutex;
+    std::condition_variable send_cv;
+    std::vector<Message> send_messages;
+    size_t next_message_index = 0;
+    size_t get_next_message_index();
+
     SOCKET socket = INVALID_SOCKET;
     void init_socket();
 
@@ -80,9 +92,10 @@ private:
     static constexpr DWORD packet_received_event_index = 0;
     static constexpr DWORD shutdown_event_index = 1;
     std::array<HANDLE, 2> events = { NULL, NULL };
-    std::vector<Message> incomplete_messages;
+    std::vector<Partial_Message> incomplete_messages;
 
-    std::vector<uint8_t> remove_message_and_get_payload(Message &message);
+    std::vector<Send_Resources> get_message_packets(Message &message);
+    std::vector<uint8_t> remove_message_and_get_payload(Partial_Message &message);
     std::optional<std::vector<uint8_t>> add_packet(Packet &&packet); // Returns message buffer if it completes a message.
     bool wait_for_packet(Receive_Resources &resources);
     sockaddr get_server_address(Receive_Resources &resources);
