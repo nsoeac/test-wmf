@@ -353,6 +353,15 @@ void Connection::join_threads() {
     }
 }
 
+void Connection::dispatch_message(Message &&message) {
+    {
+        std::scoped_lock lock(send_mutex);
+        send_messages.push_back(message);
+    }
+
+    send_cv.notify_all();
+}
+
 void Connection::acknowledge_completed_message(int64_t message_index) {
     Message message(0);
     message.index = message_index;
@@ -362,12 +371,7 @@ void Connection::acknowledge_completed_message(int64_t message_index) {
         std::println("Dispatching message to acknowledge message {}", message_index);
     }
 
-    {
-        std::scoped_lock lock(send_mutex);
-        send_messages.push_back(message);
-    }
-
-    send_cv.notify_all();
+    dispatch_message(std::move(message));
 
     if (print_message_debug_strings) {
         std::println("Dispatched message to acknowledge message {}", message_index);

@@ -96,6 +96,7 @@ private:
     std::vector<Partial_Message> incomplete_messages;
 
     std::vector<Send_Resources> get_message_packets(Message &message);
+    void dispatch_message(Message &&message);
     std::vector<uint8_t> remove_message_and_get_payload(Partial_Message &message);
     std::optional<std::vector<uint8_t>> add_packet(Packet &&packet, Header &header); // Returns message buffer if it completes a message.
     void acknowledge_completed_message(int64_t message_index);
