@@ -156,37 +156,24 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
 FINISHED:;
 }
 
-void Decoder::process_pre_parameter_set_frames() {
-    for (size_t i = 0; i < pre_parameter_set_frames.size(); i++) {
-        process_frame(std::move(pre_parameter_set_frames[i]));
-    }
-
-    pre_parameter_set_frames.clear();
-}
-
-void Decoder::process_frame(std::vector<uint8_t> &&frame) {
-    Frame_Header header = {};
-    assert(frame.size() >= sizeof(Frame_Header));
-    std::memcpy(&header, frame.data(), sizeof(Frame_Header));
-    std::span<uint8_t> payload = { frame.begin() + sizeof(Frame_Header), frame.end() };
+void Decoder::process_frame(int32_t frame_index, int32_t format_index, int64_t timestamp, std::span<uint8_t> frame_data) {
+    std::ignore = format_index; // TODO.
 
     if (print_debug_strings) {
-        std::println("Processing frame {} ({} byte(s))", header.frame_index, payload.size());
+        std::println("Processing frame {} ({} byte(s))", frame_index, frame_data.size());
     }
 
-    if (is_parameter_sets(payload)) {
-        process_pre_parameter_set_frames();
-
+    if (is_parameter_sets(frame_data)) {
         ComPtr<IMFSample> parameter_sets_sample;
 
         if (start_timestamp == INT64_MIN) {
-            start_timestamp = header.timestamp;
+            start_timestamp = timestamp;
         }
 
-        int64_t sample_time = get_sample_time(start_timestamp, header.timestamp);
+        int64_t sample_time = get_sample_time(start_timestamp, timestamp);
         std::println("Adding parameter sets with timestamp {}", sample_time);
-        parameter_sets_sample = create_sample(payload.size(), sample_time, 0);
-        copy_payload_to_first_buffer(parameter_sets_sample, payload);
+        parameter_sets_sample = create_sample(frame_data.size(), sample_time, 0);
+        copy_payload_to_first_buffer(parameter_sets_sample, frame_data);
 
         process_sample(parameter_sets_sample);
 
@@ -195,13 +182,13 @@ void Decoder::process_frame(std::vector<uint8_t> &&frame) {
     }
 
     if (!has_parameter_sets) {
-        pre_parameter_set_frames.push_back(std::move(frame));
+        std::println("Skipping frame {} due to missing parameter sets", frame_index);
         return;
     }
 
-    int64_t sample_time = get_sample_time(start_timestamp, header.timestamp);
-    ComPtr<IMFSample> sample = create_sample(payload.size(), sample_time, sample_duration);
-    copy_payload_to_first_buffer(sample, payload);
+    int64_t sample_time = get_sample_time(start_timestamp, timestamp);
+    ComPtr<IMFSample> sample = create_sample(frame_data.size(), sample_time, sample_duration);
+    copy_payload_to_first_buffer(sample, frame_data);
 
     process_sample(sample);
 

@@ -41,10 +41,6 @@ bool Connection::Message::is_complete() const {
         copy_destination += packet_payload.size();
     }
 
-    if (print_message_debug_strings) {
-        std::println("Message {} ({} bytes) is complete; {} messages remain", message.message_index, message_payload.size(), messages.size() - 1);
-    }
-
     // Remove the message.
 
     std::swap(message, messages.back());
@@ -79,6 +75,11 @@ bool Connection::Message::is_complete() const {
 
         if (message.is_complete()) {
             std::vector<uint8_t> buffer = remove_message_and_get_payload(message);
+
+            if (print_message_debug_strings) {
+                std::println("Message {} ({} bytes) completed; {} messages remain", message.message_index, buffer.size(), messages.size());
+            }
+
             return buffer;
         } else {
             return std::nullopt;
@@ -147,8 +148,10 @@ void Connection::receive() {
             }
 
             if (print_packet_debug_strings) {
-                std::println("Received {} byte(s) from server ({} messages remain)", resources.bytes_received, messages.size());
+                std::println("Received {} byte(s) from server", resources.bytes_received);
             }
+
+            resources.buffer.resize(resources.bytes_received);
 
             packet.buffer = std::move(resources.buffer);
             message_buffer_option = add_packet(std::move(packet));
@@ -266,7 +269,7 @@ void Connection::thread_function() {
     assert(resources.bytes_received == sizeof(int32_t));
 
     std::vector<uint8_t> initial_message;
-    uint16_t server_port = *(int32_t *)resources.buffer.data();
+    uint16_t server_port = (uint16_t)*(int32_t *)resources.buffer.data();
     if (server_port == 0) {
         throw std::runtime_error(std::format("Server receive port is {}", server_port));
     }

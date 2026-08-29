@@ -2,6 +2,20 @@
 
 #include "lib/lib.hpp"
 
+App::Message App::create_message(std::vector<uint8_t> &&buffer) {
+    assert(buffer.size() >= sizeof(Header));
+
+    Message message;
+    message.buffer = std::move(buffer);
+    message.header = *(Header *)message.buffer.data();
+    message.frame = std::span(message.buffer.data() + sizeof(Header), message.buffer.data() + message.buffer.size());
+    return message;
+}
+
+void App::process_message(Message &message) {
+    decoder.process_frame(message.header.frame_index, message.header.format_index, message.header.timestamp, message.frame);
+}
+
 App::App(Config &config) {
     shutdown_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (shutdown_event == NULL) {
@@ -9,6 +23,7 @@ App::App(Config &config) {
     }
 
     window.init(shutdown_event);
+    renderer.start(window.handle, &decoder, &window);
 
     {
         Connection::Settings connection_settings;
@@ -18,39 +33,54 @@ App::App(Config &config) {
         connection.initialise(connection_settings);
     }
 
-    std::optional<std::vector<uint8_t>> initial_message = connection.get_message();
+    {
+        std::vector<Message> messages;
 
-    if (!initial_message) {
-        goto BEGIN_SHUTDOWN;
+        while (true) {
+            std::optional<std::vector<uint8_t>> message_buffer = connection.get_message();
+
+            if (!message_buffer) {
+                goto BEGIN_SHUTDOWN;
+            }
+
+            {
+                Message message = create_message(std::move(*message_buffer));
+                std::println("{}", message.header);
+                if (message.header.frame_index == -1) {
+                    std::span<int32_t> initial_values = { (int32_t *)(message.frame.data()), sizeof(int32_t) * 3 };
+                    unsigned video_width = initial_values[0];
+                    unsigned video_height = initial_values[1];
+                    unsigned video_framerate = initial_values[2];
+
+                    std::println("{{ video_width: {}, video_height: {}, video_framerate: {} }}", video_width, video_height, video_framerate);
+
+                    decoder.start(video_width, video_height, video_framerate, &renderer);
+                    break;
+                } else {
+                    messages.push_back(std::move(message));
+                }
+            }
+        }
+
+        for (Message &message : messages) {
+            process_message(message);
+        }
+
+        messages.clear();
     }
 
-    {
-        std::span<int32_t> initial_values = { (int32_t *)((*initial_message).data()), sizeof(int32_t) * 4 };
-        unsigned video_width = initial_values[1];
-        unsigned video_height = initial_values[2];
-        unsigned video_framerate = initial_values[3];
+    while (!window.started_shutting_down) {
+        std::optional<std::vector<uint8_t>> message_buffer = connection.get_message();
 
-        renderer.start(window.handle, &decoder, &window);
-        decoder.start(video_width, video_height, video_framerate, &renderer);
+        if (!message_buffer) {
+            goto BEGIN_SHUTDOWN;
+        }
 
-        std::vector<std::vector<uint8_t>> working_buffers;
-        while (!window.started_shutting_down) {
-            {
-                std::unique_lock lock(connection.mutex);
-                connection.condition_variable.wait(lock, [this]() { return !connection.buffers.empty() || window.started_shutting_down; });
-
-                if (window.started_shutting_down) {
-                    goto SHUTDOWN;
-                }
-
-                std::swap(connection.buffers, working_buffers);
-            }
-
-            for (size_t i = 0; i < working_buffers.size(); i++) {
-                decoder.process_frame(std::move(working_buffers[i]));
-            }
-
-            working_buffers.clear();
+        {
+            Message message = create_message(std::move(*message_buffer));
+            std::println("{}", message.header);
+            assert(message.header.frame_index != -1);
+            process_message(message);
         }
     }
 
@@ -59,7 +89,6 @@ BEGIN_SHUTDOWN:
         THROW_WIN32(PostMessageW);
     }
 
-SHUTDOWN:
     if (renderer.thread.joinable()) {
         renderer.thread.join();
     }

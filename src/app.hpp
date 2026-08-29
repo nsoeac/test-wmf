@@ -7,10 +7,37 @@
 #include "decoder.hpp"
 
 struct App {
+    struct Header {
+        int32_t frame_index;
+        int32_t format_index;
+        int64_t timestamp;
+    };
+
+    struct Message {
+        Header header;
+        std::vector<uint8_t> buffer;
+        std::span<uint8_t> frame;
+    };
+
+    bool can_initialise_decoder = false;
     HANDLE shutdown_event = NULL;
     Window window;
     Renderer renderer;
     Decoder decoder;
     Connection connection;
+
     App(Config &config);
+    Message create_message(std::vector<uint8_t> &&buffer);
+    void process_message(Message &message);
+};
+
+template <>
+struct std::formatter<App::Header> {
+    constexpr auto parse(auto &context) {
+        return context.begin();
+    }
+
+    constexpr auto format(const App::Header &header, std::format_context &context) const {
+        return std::format_to(context.out(), "{{ frame_index: {}, format_index: {}, timestamp: {} }}", header.frame_index, header.format_index, header.timestamp);
+    }
 };
