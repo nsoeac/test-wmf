@@ -285,7 +285,7 @@ void Connection::init_socket() {
 
     {
         Send_Resources resources;
-        resources.buffer.resize(header_size);
+        resources.wsabuf.len = header_size;
         if (WSASend(socket, &resources.wsabuf, 1, &resources.bytes_sent, 0, NULL, NULL) != 0) {
             THROW_WSA(WSASend);
         }
