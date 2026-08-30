@@ -19,53 +19,18 @@ struct Double_Buffer {
     };
 
     int latest_version = -1;
-
-    Microsoft::WRL::ComPtr<ID3D12Resource> &consumer_resource() {
-        return buffers[consumer_index].resource;
-    }
-
-    void update_consumer_index() {
-        if (consumer_index == producer_index) {
-            consumer_index = 1 - consumer_index;
-
-            if (print_debug_strings) {
-                std::println("Consumer index is now {}", consumer_index);
-            }
-        }
-
-        condition_variable.notify_all();
-    }
-
-    Buffer &producer_buffer() {
-        wait_for_producer_buffer();
-        return buffers[producer_index];
-    }
-
-    bool is_valid() const {
-        return buffers[consumer_index].version >= 0;
-    }
-
-    void update_producer_index() {
-        producer_index = 1 - producer_index;
-
-        if (print_debug_strings) {
-            std::println("Producer index is now {}", producer_index);
-        }
-    }
+    Microsoft::WRL::ComPtr<ID3D12Resource> &consumer_resource();
+    void update_consumer_index();
+    Buffer &producer_buffer();
+    bool is_valid() const;
+    void update_producer_index();
 private:
     std::array<Buffer, 2> buffers;
     int producer_index = 1;
     int consumer_index = 0;
-
     std::mutex mutex;
     std::condition_variable condition_variable;
-
-    void wait_for_producer_buffer() {
-        if (producer_index == consumer_index) {
-            std::unique_lock lock(mutex);
-            condition_variable.wait(lock, [this]() { return consumer_index != producer_index; });
-        }
-    }
+    void wait_for_producer_buffer();
 };
 
 struct Renderer {

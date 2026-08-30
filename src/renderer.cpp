@@ -7,6 +7,46 @@
 
 using Microsoft::WRL::ComPtr;
 
+ComPtr<ID3D12Resource> &Double_Buffer::consumer_resource() {
+    return buffers[consumer_index].resource;
+}
+
+void Double_Buffer::update_consumer_index() {
+    if (consumer_index == producer_index) {
+        consumer_index = 1 - consumer_index;
+
+        if (print_debug_strings) {
+            std::println("Consumer index is now {}", consumer_index);
+        }
+    }
+
+    condition_variable.notify_all();
+}
+
+Double_Buffer::Buffer &Double_Buffer::producer_buffer() {
+    wait_for_producer_buffer();
+    return buffers[producer_index];
+}
+
+bool Double_Buffer::is_valid() const {
+    return buffers[consumer_index].version >= 0;
+}
+
+void Double_Buffer::update_producer_index() {
+    producer_index = 1 - producer_index;
+
+    if (print_debug_strings) {
+        std::println("Producer index is now {}", producer_index);
+    }
+}
+
+void Double_Buffer::wait_for_producer_buffer() {
+    if (producer_index == consumer_index) {
+        std::unique_lock lock(mutex);
+        condition_variable.wait(lock, [this]() { return consumer_index != producer_index; });
+    }
+}
+
 void Renderer::start(HWND window_handle, Decoder *decoder, Window *window) {
     decoder_ = decoder;
     window_ = window;
