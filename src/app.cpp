@@ -75,11 +75,17 @@ App::App(Config &config) {
         {
             Decoding::Message message = create_message(std::move(*message_buffer));
 
-            if (print_frame_debug_strings) {
-                std::println("{}: {} bytes", message.header, message.frame.size());
+            if (message.header.frame_index == -1) {
+                if (print_frame_debug_strings) {
+                    std::println("Duplicate initial packet; dropping", message.header, message.frame.size());
+                }
+                continue;
+            } else {
+                if (print_frame_debug_strings) {
+                    std::println("{}: {} bytes", message.header, message.frame.size());
+                }
             }
 
-            assert(message.header.frame_index != -1);
             decoder.process_message(std::move(message));
         }
     }
