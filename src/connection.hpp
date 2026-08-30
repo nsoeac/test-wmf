@@ -68,8 +68,8 @@ struct Connection {
     [[nodiscard]] std::optional<std::vector<uint8_t>> get_message();
     void join_threads();
 private:
-    static constexpr bool print_packet_debug_strings = true;
-    static constexpr bool print_message_debug_strings = true;
+    static constexpr bool print_packet_debug_strings = false;
+    static constexpr bool print_message_debug_strings = false;
 
     Settings settings;
     bool initialised = false;
