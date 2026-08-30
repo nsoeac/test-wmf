@@ -176,6 +176,7 @@ void Decoder::process_cached_messages() {
         Message message = std::move(cached_messages.back());
         cached_messages.pop_back();
 
+        std::println("Decoding frame {} from cached message", message.header.frame_index);
         decode_frame(message.frame, message.header.timestamp);
     }
 }
@@ -216,11 +217,22 @@ void Decoder::process_message(Message &&message) {
         std::println("Processing frame {} ({} byte(s))", message.header.frame_index, message.frame.size());
     }
 
-    if (message.header.frame_index == next_frame_index) {
-        decode_frame(message.frame, message.header.timestamp);
-        process_cached_messages();
-    } else if (!has_parameter_sets) {
-        std::println("Caching frame {} due to missing parameter sets", message.header.frame_index);
+    bool is_next_message = message.header.frame_index == next_frame_index;
+    if (is_next_message) {
+        if (has_parameter_sets || is_parameter_sets(message.frame)) {
+            std::println("Decoding frame {} from message", message.header.frame_index);
+            decode_frame(message.frame, message.header.timestamp);
+            process_cached_messages();
+        } else {
+            abort();
+        }
+    } else {
+        if (!has_parameter_sets) {
+            std::println("Caching frame {} due to missing parameter sets", message.header.frame_index);
+        } else {
+            std::println("Caching frame {} due to incorrect order", message.header.frame_index);
+        }
+
         cache_message(std::move(message));
     }
 }
