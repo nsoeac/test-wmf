@@ -37,7 +37,8 @@ struct Send_Resources {
 
 enum MESSAGE_TYPE {
     MESSAGE_TYPE_NULL = 0,
-    MESSAGE_TYPE_MESSAGE_COMPLETE = 1,
+    MESSAGE_TYPE_PORT_ACCEPTED = 1,
+    MESSAGE_TYPE_MESSAGE_COMPLETE = 2,
 };
 
 struct Packet {

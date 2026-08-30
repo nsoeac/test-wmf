@@ -273,23 +273,11 @@ void Connection::init_socket() {
     }
 
     {
-        std::unique_lock lock(mutex);
+        std::scoped_lock lock(mutex);
         connected = true;
     }
 
     condition_variable.notify_all();
-
-    if (print_packet_debug_strings) {
-        std::println("Sending 'ready' packet to server");
-    }
-
-    {
-        Send_Resources resources;
-        resources.wsabuf.len = header_size;
-        if (WSASend(socket, &resources.wsabuf, 1, &resources.bytes_sent, 0, NULL, NULL) != 0) {
-            THROW_WSA(WSASend);
-        }
-    }
 }
 
 size_t Connection::get_next_message_index() {
