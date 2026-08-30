@@ -2,13 +2,24 @@
 
 #include "lib/lib.hpp"
 
-Decoding::Message App::create_message(std::vector<uint8_t> &&buffer) {
-    assert(buffer.size() >= sizeof(Decoding::Header));
+namespace Application {
 
-    Decoding::Message message;
+Decoding::Message App::create_decoding_message(Message &&message) {
+    Decoding::Message decoding_message = {};
+    decoding_message.buffer = std::move(message.buffer);
+    decoding_message.frame = std::span(decoding_message.buffer.begin() + sizeof(Header), decoding_message.buffer.end());
+    decoding_message.frame_index = message.header.frame_index;
+    decoding_message.timestamp = message.header.timestamp;
+    return decoding_message;
+}
+
+Message App::create_message(std::vector<uint8_t> &&buffer) {
+    assert(buffer.size() >= sizeof(Header));
+
+    Message message;
     message.buffer = std::move(buffer);
-    message.header = *(Decoding::Header *)message.buffer.data();
-    message.frame = std::span(message.buffer.data() + sizeof(Decoding::Header), message.buffer.data() + message.buffer.size());
+    message.header = *(Header *)message.buffer.data();
+    message.contents = std::span(message.buffer.data() + sizeof(Header), message.buffer.data() + message.buffer.size());
     return message;
 }
 
@@ -30,7 +41,7 @@ App::App(Config &config) {
     }
 
     {
-        std::vector<Decoding::Message> messages;
+        std::vector<Message> messages;
 
         while (true) {
             std::optional<std::vector<uint8_t>> message_buffer = connection.get_message();
@@ -40,10 +51,10 @@ App::App(Config &config) {
             }
 
             {
-                Decoding::Message message = create_message(std::move(*message_buffer));
+                Message message = create_message(std::move(*message_buffer));
                 std::println("{}", message.header);
                 if (message.header.frame_index == -1) {
-                    std::span<int32_t> initial_values = { (int32_t *)(message.frame.data()), sizeof(int32_t) * 3 };
+                    std::span<int32_t> initial_values = { (int32_t *)(message.contents.data()), sizeof(int32_t) * 3 };
                     unsigned video_width = initial_values[0];
                     unsigned video_height = initial_values[1];
                     unsigned video_framerate = initial_values[2];
@@ -58,8 +69,9 @@ App::App(Config &config) {
             }
         }
 
-        for (Decoding::Message &message : messages) {
-            decoder.process_message(std::move(message));
+        for (Message &message : messages) {
+            Decoding::Message decoding_message = create_decoding_message(std::move(message));
+            decoder.process_message(std::move(decoding_message));
         }
 
         messages.clear();
@@ -73,20 +85,21 @@ App::App(Config &config) {
         }
 
         {
-            Decoding::Message message = create_message(std::move(*message_buffer));
+            Message message = create_message(std::move(*message_buffer));
 
             if (message.header.frame_index == -1) {
                 if (print_frame_debug_strings) {
-                    std::println("Duplicate initial packet; dropping", message.header, message.frame.size());
+                    std::println("Duplicate initial packet; dropping", message.header, message.contents.size());
                 }
                 continue;
             } else {
                 if (print_frame_debug_strings) {
-                    std::println("{}: {} bytes", message.header, message.frame.size());
+                    std::println("{}: {} bytes", message.header, message.contents.size());
                 }
             }
 
-            decoder.process_message(std::move(message));
+            Decoding::Message decoding_message = create_decoding_message(std::move(message));
+            decoder.process_message(std::move(decoding_message));
         }
     }
 
@@ -109,4 +122,6 @@ BEGIN_SHUTDOWN:
     window.shutting_down_condition_variable.notify_all();
 
     window.thread.join();
+}
+
 }

@@ -4,14 +4,9 @@ using Renderer_Pointer = struct Renderer *;
 
 namespace Decoding {
 
-struct Header {
-    int32_t frame_index;
-    int32_t format_index;
-    int64_t timestamp;
-};
-
 struct Message {
-    Header header;
+    int32_t frame_index;
+    int64_t timestamp;
     std::vector<uint8_t> buffer;
     std::span<uint8_t> frame;
 };
@@ -58,14 +53,3 @@ struct Decoder {
 }
 
 using Decoder = Decoding::Decoder;
-
-template <>
-struct std::formatter<Decoding::Header> {
-    constexpr auto parse(auto &context) {
-        return context.begin();
-    }
-
-    constexpr auto format(const Decoding::Header &header, std::format_context &context) const {
-        return std::format_to(context.out(), "{{ frame_index: {}, format_index: {}, timestamp: {} }}", header.frame_index, header.format_index, header.timestamp);
-    }
-};
