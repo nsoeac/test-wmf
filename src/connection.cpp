@@ -182,6 +182,11 @@ sockaddr Connection::get_server_address(Receive_Resources &resources) {
         sockaddr server_address = {};
         INT server_address_length = sizeof(server_address);
         int receive_result = WSARecvFrom(socket, &resources.wsabuf, 1, NULL, &resources.flags, &server_address, &server_address_length, &resources.overlapped, NULL);
+
+        if (shutting_down) {
+            return {};
+        }
+
         if (receive_result == 0) {
             return server_address;
         } else {
@@ -243,6 +248,10 @@ void Connection::init_socket() {
     {
         Receive_Resources resources = get_receive_resources();
         sockaddr server_address = get_server_address(resources);
+
+        if (shutting_down) {
+            return;
+        }
 
         assert(resources.bytes_received == sizeof(int32_t));
 
