@@ -1,5 +1,7 @@
 #pragma once
 
+#include "decoder.hpp"
+
 struct Vertex {
     float x;
     float y;
@@ -67,7 +69,7 @@ private:
 };
 
 struct Renderer {
-    struct Decoder *decoder_ = nullptr;
+    Decoder *decoder_ = nullptr;
     struct Window *window_ = nullptr;
 
     static constexpr unsigned frame_count = 2;
@@ -103,7 +105,7 @@ struct Renderer {
 
     static constexpr std::string_view class_name = "Window";
     static constexpr std::string_view window_name = "Renderer";
-    void start(HWND window_handle, struct Decoder *decoder, struct Window *window);
+    void start(HWND window_handle, Decoder *decoder, struct Window *window);
     void create_packed_texture(uint32_t buffer_size);
     void update_packed_texture(std::span<const uint8_t> data);
 private:

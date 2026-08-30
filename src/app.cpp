@@ -2,18 +2,14 @@
 
 #include "lib/lib.hpp"
 
-App::Message App::create_message(std::vector<uint8_t> &&buffer) {
-    assert(buffer.size() >= sizeof(Header));
+Decoding::Message App::create_message(std::vector<uint8_t> &&buffer) {
+    assert(buffer.size() >= sizeof(Decoding::Header));
 
-    Message message;
+    Decoding::Message message;
     message.buffer = std::move(buffer);
-    message.header = *(Header *)message.buffer.data();
-    message.frame = std::span(message.buffer.data() + sizeof(Header), message.buffer.data() + message.buffer.size());
+    message.header = *(Decoding::Header *)message.buffer.data();
+    message.frame = std::span(message.buffer.data() + sizeof(Decoding::Header), message.buffer.data() + message.buffer.size());
     return message;
-}
-
-void App::process_message(Message &message) {
-    decoder.process_frame(message.header.frame_index, message.header.format_index, message.header.timestamp, message.frame);
 }
 
 App::App(Config &config) {
@@ -34,7 +30,7 @@ App::App(Config &config) {
     }
 
     {
-        std::vector<Message> messages;
+        std::vector<Decoding::Message> messages;
 
         while (true) {
             std::optional<std::vector<uint8_t>> message_buffer = connection.get_message();
@@ -44,7 +40,7 @@ App::App(Config &config) {
             }
 
             {
-                Message message = create_message(std::move(*message_buffer));
+                Decoding::Message message = create_message(std::move(*message_buffer));
                 std::println("{}", message.header);
                 if (message.header.frame_index == -1) {
                     std::span<int32_t> initial_values = { (int32_t *)(message.frame.data()), sizeof(int32_t) * 3 };
@@ -62,8 +58,8 @@ App::App(Config &config) {
             }
         }
 
-        for (Message &message : messages) {
-            process_message(message);
+        for (Decoding::Message &message : messages) {
+            decoder.process_message(std::move(message));
         }
 
         messages.clear();
@@ -77,14 +73,14 @@ App::App(Config &config) {
         }
 
         {
-            Message message = create_message(std::move(*message_buffer));
+            Decoding::Message message = create_message(std::move(*message_buffer));
 
             if (print_frame_debug_strings) {
                 std::println("{}: {} bytes", message.header, message.frame.size());
             }
 
             assert(message.header.frame_index != -1);
-            process_message(message);
+            decoder.process_message(std::move(message));
         }
     }
 

@@ -1,10 +1,13 @@
 #include "decoder.hpp"
 
 #include "renderer.hpp"
+#include "app.hpp"
 
 #include "lib/lib.hpp"
 
 using Microsoft::WRL::ComPtr;
+
+namespace Decoding {
 
 void Decoder::create_texture() {
     if (output_sample != nullptr) {
@@ -156,14 +159,29 @@ void Decoder::process_sample(ComPtr<IMFSample> sample) {
 FINISHED:;
 }
 
-void Decoder::process_frame(int32_t frame_index, int32_t format_index, int64_t timestamp, std::span<uint8_t> frame_data) {
-    std::ignore = format_index; // TODO.
-
-    if (print_debug_strings) {
-        std::println("Processing frame {} ({} byte(s))", frame_index, frame_data.size());
+void Decoder::cache_message(Message &&message) {
+    auto it = cached_messages.begin();
+    for (; it != cached_messages.end(); ++it) {
+        if ((*it).header.frame_index > message.header.frame_index) {
+            break;
+        }
     }
 
-    if (is_parameter_sets(frame_data)) {
+    cached_messages.insert(it, std::move(message));
+}
+
+void Decoder::process_cached_messages() {
+    while (!cached_messages.empty() && (cached_messages.front().header.frame_index == next_frame_index)) {
+        std::swap(cached_messages.front(), cached_messages.back());
+        Message message = std::move(cached_messages.back());
+        cached_messages.pop_back();
+
+        decode_frame(message.frame, message.header.timestamp);
+    }
+}
+
+void Decoder::decode_frame(std::span<uint8_t> buffer, int64_t timestamp) {
+    if (is_parameter_sets(buffer)) {
         ComPtr<IMFSample> parameter_sets_sample;
 
         if (start_timestamp == INT64_MIN) {
@@ -172,27 +190,39 @@ void Decoder::process_frame(int32_t frame_index, int32_t format_index, int64_t t
 
         int64_t sample_time = get_sample_time(start_timestamp, timestamp);
         std::println("Adding parameter sets with timestamp {}", sample_time);
-        parameter_sets_sample = create_sample(frame_data.size(), sample_time, 0);
-        copy_payload_to_first_buffer(parameter_sets_sample, frame_data);
+        parameter_sets_sample = create_sample(buffer.size(), sample_time, 0);
+        copy_payload_to_first_buffer(parameter_sets_sample, buffer);
 
         process_sample(parameter_sets_sample);
 
         has_parameter_sets = true;
-        return;
+    } else {
+        assert(has_parameter_sets);
+
+        int64_t sample_time = get_sample_time(start_timestamp, timestamp);
+        ComPtr<IMFSample> sample = create_sample(buffer.size(), sample_time, sample_duration);
+        copy_payload_to_first_buffer(sample, buffer);
+
+        process_sample(sample);
+
+        sample = nullptr;
     }
 
-    if (!has_parameter_sets) {
-        std::println("Skipping frame {} due to missing parameter sets", frame_index);
-        return;
+    next_frame_index++;
+}
+
+void Decoder::process_message(Message &&message) {
+    if (print_debug_strings) {
+        std::println("Processing frame {} ({} byte(s))", message.header.frame_index, message.frame.size());
     }
 
-    int64_t sample_time = get_sample_time(start_timestamp, timestamp);
-    ComPtr<IMFSample> sample = create_sample(frame_data.size(), sample_time, sample_duration);
-    copy_payload_to_first_buffer(sample, frame_data);
-
-    process_sample(sample);
-
-    sample = nullptr;
+    if (message.header.frame_index == next_frame_index) {
+        decode_frame(message.frame, message.header.timestamp);
+        process_cached_messages();
+    } else if (!has_parameter_sets) {
+        std::println("Caching frame {} due to missing parameter sets", message.header.frame_index);
+        cache_message(std::move(message));
+    }
 }
 
 bool Decoder::is_parameter_sets(std::span<uint8_t> buffer) {
@@ -273,4 +303,6 @@ ComPtr<IMFTransform> Decoder::create_decoder() {
 
     CoTaskMemFree(activates);
     return decoder;
+}
+
 }
