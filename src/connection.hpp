@@ -48,6 +48,7 @@ struct Packet {
 };
 
 struct Partial_Message {
+    std::chrono::high_resolution_clock::time_point last_activity;
     std::vector<Packet> packets;
     int64_t message_index = 0;
     int64_t packet_count = 0;
@@ -62,6 +63,20 @@ struct Message {
 };
 
 WSABUF get_wsabuf(std::span<uint8_t> span);
+
+struct Receive_State {
+    std::mutex mutex;
+    std::condition_variable condition_variable;
+    std::vector<Partial_Message> partial_messages;
+    int64_t highest_message_index_encountered = -1;
+    int64_t highest_message_index_completed = -1;
+};
+
+struct Complete_Buffers {
+    std::mutex mutex;
+    std::condition_variable condition_variable;
+    std::vector<std::vector<uint8_t>> complete_buffers;
+};
 
 struct Connection {
     Connection();
@@ -94,7 +109,7 @@ private:
     static constexpr DWORD packet_received_event_index = 0;
     static constexpr DWORD shutdown_event_index = 1;
     std::array<HANDLE, 2> events = { NULL, NULL };
-    std::vector<Partial_Message> incomplete_messages;
+    std::vector<Partial_Message> partial_messages;
 
     std::vector<Send_Resources> get_message_packets(Message &message);
     void dispatch_message(Message &&message);

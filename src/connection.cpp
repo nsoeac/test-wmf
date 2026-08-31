@@ -60,24 +60,25 @@ std::vector<uint8_t> Connection::remove_message_and_get_payload(Partial_Message 
 
     // Remove the message.
 
-    std::swap(message, incomplete_messages.back());
-    incomplete_messages.pop_back();
+    std::swap(message, partial_messages.back());
+    partial_messages.pop_back();
 
     return message_payload;
 }
 
 // Returns message buffer if it completes a message.
 std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet, Header &header) {
-    auto message_it = std::ranges::find_if(incomplete_messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Partial_Message::message_index);
+    auto message_it = std::ranges::find_if(partial_messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Partial_Message::message_index);
 
     // If the message doesn't exist, create it.
 
-    if (message_it == incomplete_messages.end()) {
+    if (message_it == partial_messages.end()) {
         Partial_Message message;
+        message.last_activity = std::chrono::high_resolution_clock::now();
         message.message_index = header.message_index;
         message.packet_count = header.packet_count;
-        incomplete_messages.push_back(message);
-        message_it = std::prev(incomplete_messages.end());
+        partial_messages.push_back(message);
+        message_it = std::prev(partial_messages.end());
     }
 
     Partial_Message &message = *message_it;
@@ -92,7 +93,7 @@ std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet, Head
             std::vector<uint8_t> buffer = remove_message_and_get_payload(message);
 
             if (print_message_debug_strings) {
-                std::println("Message {} ({} bytes) completed; {} messages remain", message.message_index, buffer.size(), incomplete_messages.size());
+                std::println("Message {} ({} bytes) completed; {} messages remain", message.message_index, buffer.size(), partial_messages.size());
             }
 
             return buffer;
