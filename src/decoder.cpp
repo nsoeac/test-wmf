@@ -172,9 +172,8 @@ void Decoder::cache_message(Message &&message) {
 
 void Decoder::process_cached_messages() {
     while (!cached_messages.empty() && (cached_messages.front().frame_index == next_frame_index)) {
-        std::swap(cached_messages.front(), cached_messages.back());
-        Message message = std::move(cached_messages.back());
-        cached_messages.pop_back();
+        Message message = std::move(cached_messages.front());
+        cached_messages.erase(cached_messages.begin());
 
         std::println("Decoding frame {} from cached message", message.frame_index);
         decode_frame(message.frame, message.timestamp);

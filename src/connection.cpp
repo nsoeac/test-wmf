@@ -194,6 +194,8 @@ sockaddr Connection::get_server_address(Receive_Resources &resources) {
             if (last_error == WSA_IO_PENDING) {
                 if (wait_for_packet(resources)) {
                     return server_address;
+                } else {
+                    throw std::runtime_error("Failed to get server address");
                 }
             } else {
                 THROW_WSA_CODE(WSARecvFrom, last_error);
@@ -250,7 +252,10 @@ void Connection::init_socket() {
         sockaddr server_address = get_server_address(resources);
 
         if (shutting_down) {
+            std::println("Got server address but shutting down");
             return;
+        } else {
+            std::println("Got server address");
         }
 
         assert(resources.bytes_received == sizeof(int32_t));
@@ -271,13 +276,6 @@ void Connection::init_socket() {
             THROW_WSA(WSAConnect);
         }
     }
-
-    {
-        std::scoped_lock lock(mutex);
-        connected = true;
-    }
-
-    condition_variable.notify_all();
 }
 
 size_t Connection::get_next_message_index() {
@@ -323,20 +321,16 @@ void Connection::initialise(Settings settings_) {
 
     events = { packet_received_event, settings.shutdown_event };
 
+    init_socket();
+
     initialised = true;
 
     receive_thread = std::thread(&Connection::receive_thread_function, this);
-
-    {
-        std::unique_lock lock(mutex);
-        condition_variable.wait(lock, [this]() { return connected || shutting_down; });
-
-        if (shutting_down) {
-            return;
-        }
-    }
-
     send_thread = std::thread(&Connection::send_thread_function, this);
+
+    Message ready_message(0);
+    ready_message.other = MESSAGE_TYPE_PORT_ACCEPTED;
+    dispatch_message(std::move(ready_message));
 }
 
 void Connection::join_threads() {
@@ -348,7 +342,7 @@ void Connection::join_threads() {
         send_thread.join();
     }
 
-    if (connected) {
+    if (socket != INVALID_SOCKET) {
         if (closesocket(socket) == SOCKET_ERROR) {
             THROW_WSA(closesocket);
         }
@@ -358,7 +352,7 @@ void Connection::join_threads() {
 void Connection::dispatch_message(Message &&message) {
     {
         std::scoped_lock lock(send_mutex);
-        send_messages.push_back(message);
+        send_messages.push_back(std::move(message));
     }
 
     send_cv.notify_all();
@@ -381,8 +375,6 @@ void Connection::acknowledge_completed_message(int64_t message_index) {
 }
 
 void Connection::receive_thread_function() {
-    init_socket();
-
     while (true) {
         std::optional<std::vector<uint8_t>> message_buffer_option = std::nullopt;
 

@@ -78,7 +78,6 @@ private:
     std::mutex mutex;
     std::condition_variable condition_variable;
     std::vector<std::vector<uint8_t>> received_buffers;
-    bool connected = false;
     bool shutting_down = false;
 
     std::mutex send_mutex;
