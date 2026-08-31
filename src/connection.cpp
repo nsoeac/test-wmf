@@ -178,31 +178,27 @@ sockaddr Connection::get_server_address(Receive_Resources &resources) {
         std::println("Getting server address");
     }
 
-    while (true) {
-        sockaddr server_address = {};
-        INT server_address_length = sizeof(server_address);
-        int receive_result = WSARecvFrom(socket, &resources.wsabuf, 1, NULL, &resources.flags, &server_address, &server_address_length, &resources.overlapped, NULL);
+    sockaddr server_address = {};
+    INT server_address_length = sizeof(server_address);
+    int receive_result = WSARecvFrom(socket, &resources.wsabuf, 1, NULL, &resources.flags, &server_address, &server_address_length, &resources.overlapped, NULL);
 
-        if (shutting_down) {
-            return {};
-        }
+    if (shutting_down) {
+        return {};
+    }
 
-        if (receive_result == 0) {
-            return server_address;
-        } else {
-            int last_error = WSAGetLastError();
-            if (last_error == WSA_IO_PENDING) {
-                if (wait_for_packet(resources)) {
-                    return server_address;
-                } else {
-                    throw std::runtime_error("Failed to get server address");
-                }
+    if (receive_result == 0) {
+        return server_address;
+    } else {
+        int last_error = WSAGetLastError();
+        if (last_error == WSA_IO_PENDING) {
+            if (wait_for_packet(resources)) {
+                return server_address;
             } else {
-                THROW_WSA_CODE(WSARecvFrom, last_error);
+                throw std::runtime_error("Failed to get server address");
             }
+        } else {
+            THROW_WSA_CODE(WSARecvFrom, last_error);
         }
-
-        reset_receive_resources(resources);
     }
 }
 
@@ -447,6 +443,46 @@ void Connection::send_thread_function() {
         }
 
         send_messages.clear();
+    }
+}
+
+void Connection::request_missing_resources() {
+}
+
+void Connection::missing_packet_thread_function() {
+    HANDLE timer = CreateWaitableTimerW(NULL, FALSE, NULL);
+    if (timer == NULL) {
+        THROW_WIN32(CreateWaitableTimerW);
+    }
+
+    if (SetWaitableTimer(timer, 0, timer_period, NULL, NULL, FALSE) == 0) {
+        THROW_WIN32(SetWaitableTimer);
+    }
+
+    std::array<HANDLE, 2> handles = { timer, events[shutdown_event_index] };
+    DWORD handle_count = (DWORD)handles.size();
+
+    while (!shutting_down) {
+        DWORD wait_result = WaitForMultipleObjects(handle_count, handles.data(), FALSE, 0);
+        bool succeeded = (wait_result >= WAIT_OBJECT_0) && (wait_result < (WAIT_OBJECT_0 + handle_count));
+        bool abandoned = (wait_result >= WAIT_ABANDONED_0) && (wait_result < (WAIT_ABANDONED_0 + handle_count));
+        assert(!abandoned);
+        if (succeeded) {
+            DWORD object_index = wait_result - WAIT_OBJECT_0;
+            if (object_index == 0) {
+                request_missing_resources();
+            } else if (object_index == 1) {
+                break;
+            } else {
+                abort();
+            }
+        } else {
+            assert(wait_result != WAIT_TIMEOUT);
+            if (wait_result != WAIT_FAILED) {
+                std::println("Unexpected wait result {}", wait_result);
+            }
+            THROW_WIN32(WaitForMultipleObjects);
+        }
     }
 }
 #pragma endregion

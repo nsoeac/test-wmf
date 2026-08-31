@@ -71,6 +71,7 @@ struct Connection {
 private:
     static constexpr bool print_packet_debug_strings = false;
     static constexpr bool print_message_debug_strings = false;
+    static constexpr LONG timer_period = 1'000'000; // 100 milliseconds in 100-nanosecond intervals.
 
     Settings settings;
     bool initialised = false;
@@ -108,8 +109,11 @@ private:
 
     std::thread receive_thread;
     std::thread send_thread;
+    std::thread missing_packet_thread;
     void receive_thread_function();
     void send_thread_function();
+    void missing_packet_thread_function();
+    void request_missing_resources();
 };
 
 }
