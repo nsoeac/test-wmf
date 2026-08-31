@@ -66,16 +66,15 @@ WSABUF get_wsabuf(std::span<uint8_t> span);
 
 struct Receive_State {
     std::mutex mutex;
-    std::condition_variable condition_variable;
     std::vector<Partial_Message> partial_messages;
     int64_t highest_message_index_encountered = -1;
     int64_t highest_message_index_completed = -1;
 };
 
-struct Complete_Buffers {
+struct Completed_State {
     std::mutex mutex;
     std::condition_variable condition_variable;
-    std::vector<std::vector<uint8_t>> complete_buffers;
+    std::vector<std::vector<uint8_t>> completed_buffers;
 };
 
 struct Connection {
@@ -93,7 +92,6 @@ private:
 
     std::mutex mutex;
     std::condition_variable condition_variable;
-    std::vector<std::vector<uint8_t>> received_buffers;
     bool shutting_down = false;
 
     std::mutex send_mutex;
@@ -109,7 +107,8 @@ private:
     static constexpr DWORD packet_received_event_index = 0;
     static constexpr DWORD shutdown_event_index = 1;
     std::array<HANDLE, 2> events = { NULL, NULL };
-    std::vector<Partial_Message> partial_messages;
+    Receive_State receive_state;
+    Completed_State completed_state;
 
     std::vector<Send_Resources> get_message_packets(Message &message);
     void dispatch_message(Message &&message);

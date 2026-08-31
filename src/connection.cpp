@@ -60,25 +60,32 @@ std::vector<uint8_t> Connection::remove_message_and_get_payload(Partial_Message 
 
     // Remove the message.
 
-    std::swap(message, partial_messages.back());
-    partial_messages.pop_back();
+    std::swap(message, receive_state.partial_messages.back());
+    receive_state.partial_messages.pop_back();
 
     return message_payload;
 }
 
 // Returns message buffer if it completes a message.
 std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet, Header &header) {
-    auto message_it = std::ranges::find_if(partial_messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Partial_Message::message_index);
+    std::scoped_lock lock(receive_state.mutex);
+
+    auto message_it = std::ranges::find_if(receive_state.partial_messages, [&header](int64_t message_index) { return message_index == header.message_index; }, &Partial_Message::message_index);
 
     // If the message doesn't exist, create it.
 
-    if (message_it == partial_messages.end()) {
+    if (message_it == receive_state.partial_messages.end()) {
         Partial_Message message;
         message.last_activity = std::chrono::high_resolution_clock::now();
         message.message_index = header.message_index;
         message.packet_count = header.packet_count;
-        partial_messages.push_back(message);
-        message_it = std::prev(partial_messages.end());
+
+        if (receive_state.highest_message_index_encountered < header.message_index) {
+            receive_state.highest_message_index_encountered = header.message_index;
+        }
+
+        receive_state.partial_messages.push_back(message);
+        message_it = std::prev(receive_state.partial_messages.end());
     }
 
     Partial_Message &message = *message_it;
@@ -90,10 +97,14 @@ std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet, Head
         std::ranges::sort(message.packets, [](int64_t first_packet_index, int64_t second_packet_index) { return first_packet_index < second_packet_index; }, &Packet::packet_index);
 
         if (message.is_complete()) {
+            if (receive_state.highest_message_index_completed < header.message_index) {
+                receive_state.highest_message_index_completed = header.message_index;
+            }
+
             std::vector<uint8_t> buffer = remove_message_and_get_payload(message);
 
             if (print_message_debug_strings) {
-                std::println("Message {} ({} bytes) completed; {} messages remain", message.message_index, buffer.size(), partial_messages.size());
+                std::println("Message {} ({} bytes) completed; {} messages remain", message.message_index, buffer.size(), receive_state.partial_messages.size());
             }
 
             return buffer;
@@ -153,15 +164,14 @@ Receive_Resources Connection::get_receive_resources() {
 
 std::optional<std::vector<uint8_t>> Connection::get_message() {
     while (true) {
-        std::unique_lock lock(mutex);
-        condition_variable.wait(lock, [this]() { return !received_buffers.empty() || shutting_down; });
+        std::unique_lock lock(completed_state.mutex);
+        completed_state.condition_variable.wait(lock, [this]() { return !completed_state.completed_buffers.empty() || shutting_down; });
 
         if (shutting_down) {
             return std::nullopt;
-        } else if (!received_buffers.empty()) {
-            std::swap(received_buffers.front(), received_buffers.back());
-            std::vector<uint8_t> buffer = std::move(received_buffers.back());
-            received_buffers.pop_back();
+        } else if (!completed_state.completed_buffers.empty()) {
+            std::vector<uint8_t> buffer = std::move(completed_state.completed_buffers.front());
+            completed_state.completed_buffers.erase(completed_state.completed_buffers.begin());
             return buffer;
         }
     }
@@ -407,11 +417,11 @@ void Connection::receive_thread_function() {
         }
 
         {
-            std::unique_lock lock(mutex);
-            received_buffers.push_back(std::move(*message_buffer_option));
+            std::scoped_lock lock(completed_state.mutex);
+            completed_state.completed_buffers.push_back(std::move(*message_buffer_option));
         }
 
-        condition_variable.notify_all();
+        completed_state.condition_variable.notify_all();
     }
 
 SHUTDOWN:
