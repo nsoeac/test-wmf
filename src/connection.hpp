@@ -78,6 +78,16 @@ struct Completed_State {
     std::vector<int64_t> completed_indices;
 };
 
+struct Packets_Descriptor {
+    int64_t message_index;
+    std::vector<int64_t> packet_indices;
+};
+
+struct Missing_Resources {
+    std::vector<int64_t> message_indices;
+    std::vector<Packets_Descriptor> packets_descriptors;
+};
+
 struct Connection {
     Connection();
     void initialise(Settings settings);
@@ -129,6 +139,7 @@ private:
     void send_thread_function();
     void missing_packet_thread_function();
     void request_missing_resources();
+    Missing_Resources get_missing_resources();
 };
 
 }

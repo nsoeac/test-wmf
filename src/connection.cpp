@@ -507,12 +507,7 @@ static std::vector<int64_t> get_partial_message_missing_packet_indices(Partial_M
     return result;
 }
 
-void Connection::request_missing_resources() {
-    struct Missing_Descriptor {
-        int64_t message_index;
-        std::vector<int64_t> packet_indices;
-    };
-
+Missing_Resources Connection::get_missing_resources() {
     auto is_message_complete = [this](std::vector<int64_t>::iterator &completed_message_index_it, int64_t message_index) -> bool {
         while (completed_message_index_it != completed_state.completed_indices.end()) {
             int64_t completed_message_index = *completed_message_index_it;
@@ -528,11 +523,11 @@ void Connection::request_missing_resources() {
         return false;
     };
 
-    auto get_missing_descriptor = [this](std::vector<Partial_Message>::iterator &partial_message_it, int64_t message_index) -> std::optional<Missing_Descriptor> {
+    auto get_missing_descriptor = [this](std::vector<Partial_Message>::iterator &partial_message_it, int64_t message_index) -> std::optional<Packets_Descriptor> {
         while (partial_message_it != receive_state.partial_messages.end()) {
             Partial_Message &partial_message = *partial_message_it;
             if (partial_message.message_index == message_index) {
-                Missing_Descriptor missing_descriptor = {};
+                Packets_Descriptor missing_descriptor = {};
                 missing_descriptor.message_index = message_index;
                 missing_descriptor.packet_indices = get_partial_message_missing_packet_indices(partial_message);
                 return missing_descriptor;
@@ -546,20 +541,14 @@ void Connection::request_missing_resources() {
         return std::nullopt;
     };
 
-    std::println("request_missing_resources called");
-
-    // Iterate over the messages starting from the index after the last completed index.
-
     std::scoped_lock receive_lock(receive_state.mutex);
     std::scoped_lock completed_lock(completed_state.mutex);
 
-    std::vector<int64_t> missing_message_indices;
-    std::vector<Missing_Descriptor> missing_descriptors;
-
+    Missing_Resources missing_resources;
     auto partial_it = receive_state.partial_messages.begin();
     auto completed_message_index_it = completed_state.completed_indices.begin();
     for (int64_t message_index = (receive_state.highest_message_index_completed + 1); message_index <= receive_state.highest_message_index_encountered; message_index++) {
-        // For each message index from the next index to complete to the highest one encountered
+        // For each message index from the next index to complete to the highest one encountered:
         // - If the message index has a message, then call `get_partial_message_missing_packet_indices`.
         // - If the message index has no message, then add it to `missing_message_indices`.
 
@@ -569,16 +558,24 @@ void Connection::request_missing_resources() {
             continue;
         }
 
-        std::optional<Missing_Descriptor> missing_descriptor_opt = get_missing_descriptor(partial_it, message_index);
+        std::optional<Packets_Descriptor> missing_descriptor_opt = get_missing_descriptor(partial_it, message_index);
 
         if (missing_descriptor_opt) {
-            missing_descriptors.push_back(std::move(*missing_descriptor_opt));
+            missing_resources.packets_descriptors.push_back(std::move(*missing_descriptor_opt));
         } else {
             // Message is missing.
 
-            missing_message_indices.push_back(message_index);
+            missing_resources.message_indices.push_back(message_index);
         }
     }
+
+    return missing_resources;
+}
+
+void Connection::request_missing_resources() {
+    std::println("request_missing_resources called");
+
+    Missing_Resources missing_resources = get_missing_resources();
 }
 
 void Connection::missing_packet_thread_function() {
