@@ -76,7 +76,6 @@ std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet, Head
 
     if (message_it == receive_state.partial_messages.end()) {
         Partial_Message message;
-        message.last_activity = std::chrono::high_resolution_clock::now();
         message.message_index = header.message_index;
         message.packet_count = header.packet_count;
 
@@ -89,6 +88,7 @@ std::optional<std::vector<uint8_t>> Connection::add_packet(Packet &&packet, Head
     }
 
     Partial_Message &message = *message_it;
+    message.last_activity = std::chrono::high_resolution_clock::now();
 
     // Add the packet if we don't already have it.
 
@@ -523,13 +523,23 @@ Missing_Resources Connection::get_missing_resources() {
         return false;
     };
 
-    auto get_missing_descriptor = [this](std::vector<Partial_Message>::iterator &partial_message_it, int64_t message_index) -> std::optional<Packets_Descriptor> {
+    auto now = std::chrono::high_resolution_clock::now();
+
+    auto get_missing_descriptor = [this, &now](std::vector<Partial_Message>::iterator &partial_message_it, int64_t message_index) -> std::optional<Packets_Descriptor> {
         while (partial_message_it != receive_state.partial_messages.end()) {
             Partial_Message &partial_message = *partial_message_it;
             if (partial_message.message_index == message_index) {
+                bool message_has_recent_activity = (partial_message.last_activity - now) < message_activity_cooldown;
+                if (message_has_recent_activity) {
+                    return std::nullopt;
+                }
+
                 Packets_Descriptor missing_descriptor = {};
                 missing_descriptor.message_index = message_index;
                 missing_descriptor.packet_indices = get_partial_message_missing_packet_indices(partial_message);
+
+                partial_message.last_activity = now;
+
                 return missing_descriptor;
             } else if (partial_message.message_index > message_index) {
                 return std::nullopt;

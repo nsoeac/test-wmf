@@ -98,6 +98,7 @@ private:
     static constexpr bool print_packet_debug_strings = false;
     static constexpr bool print_message_debug_strings = false;
     static constexpr LONG timer_period = 1'000'000; // 100 milliseconds in 100-nanosecond intervals.
+    static constexpr std::chrono::milliseconds message_activity_cooldown = 100ms;
 
     Settings settings;
     bool initialised = false;
