@@ -626,7 +626,9 @@ void Connection::missing_packet_thread_function() {
         THROW_WIN32(CreateWaitableTimerW);
     }
 
-    if (SetWaitableTimer(timer, 0, timer_period, NULL, NULL, FALSE) == 0) {
+    LARGE_INTEGER due_time = {};
+    due_time.QuadPart = -1;
+    if (SetWaitableTimer(timer, &due_time, timer_period, NULL, NULL, FALSE) == 0) {
         THROW_WIN32(SetWaitableTimer);
     }
 
@@ -634,7 +636,7 @@ void Connection::missing_packet_thread_function() {
     DWORD handle_count = (DWORD)handles.size();
 
     while (!shutting_down) {
-        DWORD wait_result = WaitForMultipleObjects(handle_count, handles.data(), FALSE, 0);
+        DWORD wait_result = WaitForMultipleObjects(handle_count, handles.data(), FALSE, INFINITE);
         bool succeeded = (wait_result >= WAIT_OBJECT_0) && (wait_result < (WAIT_OBJECT_0 + handle_count));
         bool abandoned = (wait_result >= WAIT_ABANDONED_0) && (wait_result < (WAIT_ABANDONED_0 + handle_count));
         assert(!abandoned);
@@ -648,7 +650,6 @@ void Connection::missing_packet_thread_function() {
                 abort();
             }
         } else {
-            assert(wait_result != WAIT_TIMEOUT);
             if (wait_result != WAIT_FAILED) {
                 std::println("Unexpected wait result {}", wait_result);
             }
