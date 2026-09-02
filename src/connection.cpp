@@ -576,6 +576,38 @@ void Connection::request_missing_resources() {
     std::println("request_missing_resources called");
 
     Missing_Resources missing_resources = get_missing_resources();
+    size_t missing_message_segment_size = (missing_resources.message_indices.size() * sizeof(int64_t) * 2); // For each entire missing message, the request is the message index followed by -1 as a 64-bit integer.;
+    size_t missing_packet_segment_size = std::ranges::fold_left(missing_resources.packets_descriptors, 0, [](size_t size, Packets_Descriptor &descriptor) {
+        assert(descriptor.packet_indices.size() > 0);
+        size_t additional_count = 2 + descriptor.packet_indices.size(); // For missing packets descriptor, the request is the message index followed by the number of packet indices followed by the packet indices.
+        size_t additional_size = sizeof(int64_t) * additional_count;
+        return size + additional_size;
+    });
+    size_t message_size = missing_message_segment_size + missing_packet_segment_size;
+    Message message(message_size);
+    message.index = get_next_message_index();
+    message.other = MESSAGE_TYPE_REQUEST_MISSING_RESOURCES;
+
+    size_t offset = 0;
+    int64_t minus_one = -1;
+    for (int64_t message_index : missing_resources.message_indices) {
+        std::memcpy(message.buffer.data() + offset, &message_index, sizeof(message_index));
+        offset += sizeof(message_index);
+        std::memcpy(message.buffer.data() + offset, &minus_one, sizeof(minus_one));
+        offset += sizeof(minus_one);
+    }
+
+    for (Packets_Descriptor &packets_descriptor : missing_resources.packets_descriptors) {
+        std::memcpy(message.buffer.data() + offset, &packets_descriptor.message_index, sizeof(packets_descriptor.message_index));
+        offset += sizeof(packets_descriptor.message_index);
+
+        size_t count = packets_descriptor.packet_indices.size();
+        std::memcpy(message.buffer.data() + offset, &count, sizeof(count));
+        offset += sizeof(count);
+    }
+
+    assert(offset == message_size);
+    dispatch_message(std::move(message));
 }
 
 void Connection::missing_packet_thread_function() {
