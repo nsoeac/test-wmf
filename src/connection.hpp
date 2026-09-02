@@ -75,6 +75,7 @@ struct Completed_State {
     std::mutex mutex;
     std::condition_variable condition_variable;
     std::vector<std::vector<uint8_t>> completed_buffers;
+    std::vector<int64_t> completed_indices;
 };
 
 struct Connection {

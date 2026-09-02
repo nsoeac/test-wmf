@@ -66,5 +66,7 @@
 #include <filesystem>
 #include <thread>
 #include <condition_variable>
+#include <variant>
+#include <numeric>
 
 using namespace std::literals;

@@ -334,6 +334,7 @@ void Connection::initialise(Settings settings_) {
 
     receive_thread = std::thread(&Connection::receive_thread_function, this);
     send_thread = std::thread(&Connection::send_thread_function, this);
+    missing_packet_thread = std::thread(&Connection::missing_packet_thread_function, this);
 
     Message ready_message(0);
     ready_message.other = MESSAGE_TYPE_PORT_ACCEPTED;
@@ -347,6 +348,10 @@ void Connection::join_threads() {
 
     if (send_thread.joinable()) {
         send_thread.join();
+    }
+
+    if (missing_packet_thread.joinable()) {
+        missing_packet_thread.join();
     }
 
     if (socket != INVALID_SOCKET) {
@@ -384,6 +389,7 @@ void Connection::acknowledge_completed_message(int64_t message_index) {
 void Connection::receive_thread_function() {
     while (true) {
         std::optional<std::vector<uint8_t>> message_buffer_option = std::nullopt;
+        Header header = {};
 
         while (message_buffer_option == std::nullopt) {
             Receive_Resources resources = get_receive_resources();
@@ -408,7 +414,7 @@ void Connection::receive_thread_function() {
             resources.buffer.resize(resources.bytes_received);
 
             packet.buffer = std::move(resources.buffer);
-            Header header = packet.header();
+            header = packet.header();
             message_buffer_option = add_packet(std::move(packet), header);
 
             if (message_buffer_option) {
@@ -419,6 +425,9 @@ void Connection::receive_thread_function() {
         {
             std::scoped_lock lock(completed_state.mutex);
             completed_state.completed_buffers.push_back(std::move(*message_buffer_option));
+
+            auto index_insert_location = std::ranges::find_if(completed_state.completed_indices, [&header](int64_t message_index) { return message_index > header.message_index; });
+            completed_state.completed_indices.insert(index_insert_location, header.message_index);
         }
 
         completed_state.condition_variable.notify_all();
@@ -457,7 +466,119 @@ void Connection::send_thread_function() {
     }
 }
 
+static std::vector<int64_t> get_partial_message_missing_packet_indices(Partial_Message &partial_message) {
+    auto it = partial_message.packets.begin();
+    std::vector<int64_t> result;
+
+    int64_t packet_index = 0;
+    while (packet_index != partial_message.packet_count) {
+        if (it == partial_message.packets.end()) {
+            // There are no more packets from the current index to the packet count (exclusive), so add in all the remaining indices.
+
+            size_t start_index = result.size();
+            size_t indices_to_add = partial_message.packet_count - packet_index - 1;
+            result.resize(result.size() + indices_to_add);
+            std::iota(result.begin() + start_index, result.end(), packet_index);
+            packet_index += indices_to_add;
+        } else {
+            Packet &packet = *it;
+            int64_t packet_packet_index = packet.packet_index();
+            if (packet_packet_index == packet_index) {
+                // The current packet index corresponds to an existing packet.
+                packet_index++;
+                ++it;
+            } else {
+                assert(packet_packet_index > packet_index);
+
+                // The packet's index is greater than the current packet index, so add all the missing packet indices up to the packet's index.
+                // Afterwards increment the iterator and the current packet index to skip the matching packet.
+
+                size_t indices_to_add = packet_packet_index - packet_index;
+                size_t start_index = result.size();
+                result.resize(result.size() + indices_to_add);
+                std::iota(result.begin() + start_index, result.end(), packet_index);
+
+                packet_index += indices_to_add + 1;
+                ++it;
+            }
+        }
+    }
+
+    return result;
+}
+
 void Connection::request_missing_resources() {
+    struct Missing_Descriptor {
+        int64_t message_index;
+        std::vector<int64_t> packet_indices;
+    };
+
+    auto is_message_complete = [this](std::vector<int64_t>::iterator &completed_message_index_it, int64_t message_index) -> bool {
+        while (completed_message_index_it != completed_state.completed_indices.end()) {
+            int64_t completed_message_index = *completed_message_index_it;
+            if (completed_message_index == message_index) {
+                return true;
+            } else if (completed_message_index > message_index) {
+                return false;
+            } else {
+                ++completed_message_index_it;
+            }
+        }
+
+        return false;
+    };
+
+    auto get_missing_descriptor = [this](std::vector<Partial_Message>::iterator &partial_message_it, int64_t message_index) -> std::optional<Missing_Descriptor> {
+        while (partial_message_it != receive_state.partial_messages.end()) {
+            Partial_Message &partial_message = *partial_message_it;
+            if (partial_message.message_index == message_index) {
+                Missing_Descriptor missing_descriptor = {};
+                missing_descriptor.message_index = message_index;
+                missing_descriptor.packet_indices = get_partial_message_missing_packet_indices(partial_message);
+                return missing_descriptor;
+            } else if (partial_message.message_index > message_index) {
+                return std::nullopt;
+            } else {
+                ++partial_message_it;
+            }
+        }
+
+        return std::nullopt;
+    };
+
+    std::println("request_missing_resources called");
+
+    // Iterate over the messages starting from the index after the last completed index.
+
+    std::scoped_lock receive_lock(receive_state.mutex);
+    std::scoped_lock completed_lock(completed_state.mutex);
+
+    std::vector<int64_t> missing_message_indices;
+    std::vector<Missing_Descriptor> missing_descriptors;
+
+    auto partial_it = receive_state.partial_messages.begin();
+    auto completed_message_index_it = completed_state.completed_indices.begin();
+    for (int64_t message_index = (receive_state.highest_message_index_completed + 1); message_index <= receive_state.highest_message_index_encountered; message_index++) {
+        // For each message index from the next index to complete to the highest one encountered
+        // - If the message index has a message, then call `get_partial_message_missing_packet_indices`.
+        // - If the message index has no message, then add it to `missing_message_indices`.
+
+        bool message_is_complete = is_message_complete(completed_message_index_it, message_index);
+
+        if (message_is_complete) {
+            continue;
+        }
+
+        std::optional<Missing_Descriptor> missing_descriptor_opt = get_missing_descriptor(partial_it, message_index);
+
+        if (missing_descriptor_opt) {
+            missing_descriptors.push_back(std::move(*missing_descriptor_opt));
+        } else {
+            // Message is missing.
+
+            missing_message_indices.push_back(message_index);
+        }
+    }
 }
 
 void Connection::missing_packet_thread_function() {
